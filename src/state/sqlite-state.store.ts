@@ -1,5 +1,5 @@
 import { Injectable, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
-import Database from 'better-sqlite3';
+import Database = require('better-sqlite3');
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
