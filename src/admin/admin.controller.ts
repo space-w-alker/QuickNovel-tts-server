@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, Post, Query, Req, Res } from '@nestjs/com
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { AppConfig } from '../config/app-config';
 import { SqliteStateStore } from '../state/sqlite-state.store';
-import { AdminSessionRecord, OperationalSettings } from '../state/state.types';
+import { AdminSessionRecord, AudioSortField, OperationalSettings, SortDirection } from '../state/state.types';
 import { AudioStorageService } from '../tts/audio-storage.service';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminRendererService } from './admin-renderer.service';
@@ -101,6 +101,8 @@ export class AdminController {
   audio(
     @Req() request: CookieRequest,
     @Query('status') rawStatus: string | undefined,
+    @Query('sort') rawSort: string | undefined,
+    @Query('direction') rawDirection: string | undefined,
     @Query('page') rawPage: string | undefined,
     @Query('notice') notice: string | undefined,
     @Res() reply: FastifyReply,
@@ -108,17 +110,39 @@ export class AdminController {
     const session = this.requireSession(request, reply);
     if (!session) return;
     const status = rawStatus === 'ready' || rawStatus === 'generating' || rawStatus === 'failed' ? rawStatus : undefined;
+    const sort: AudioSortField = rawSort === 'cacheHits' || rawSort === 'size' ? rawSort : 'updated';
+    const direction: SortDirection = rawDirection === 'asc' ? 'asc' : 'desc';
     const page = this.pageNumber(rawPage);
     const pageSize = 50;
     const total = this.state.countAudio(status);
-    const audio = this.state.listAudio(pageSize, (page - 1) * pageSize, status).map((record) => ({
+    const audio = this.state.listAudio(pageSize, (page - 1) * pageSize, status, sort, direction).map((record) => ({
       ...record,
       ...(record.status === 'ready' ? { playbackUrl: this.storage.signedUrl(record.cacheKey).url } : {}),
     }));
+    const filterParams = { ...(status ? { status } : {}), sort, direction };
+    const audioUrl = (params: Record<string, string>): string => {
+      const query = new URLSearchParams(params);
+      return `/admin/audio${query.size ? `?${query.toString()}` : ''}`;
+    };
+    const sortUrl = (field: AudioSortField): string => audioUrl({
+      ...(status ? { status } : {}),
+      sort: field,
+      direction: sort === field && direction === 'desc' ? 'asc' : 'desc',
+    });
     this.page(reply, 'audio', session, {
       active: 'audio', audio, metrics: this.state.getAudioLibraryMetrics(),
-      status: status ?? 'all', notice: this.notice(notice),
-      ...this.pagination(page, pageSize, total, '/admin/audio', status ? { status } : {}),
+      status: status ?? 'all', sort, direction, notice: this.notice(notice),
+      updatedSortUrl: sortUrl('updated'),
+      cacheHitsSortUrl: sortUrl('cacheHits'),
+      sizeSortUrl: sortUrl('size'),
+      updatedSortIndicator: sort === 'updated' ? (direction === 'asc' ? '↑' : '↓') : '',
+      cacheHitsSortIndicator: sort === 'cacheHits' ? (direction === 'asc' ? '↑' : '↓') : '',
+      sizeSortIndicator: sort === 'size' ? (direction === 'asc' ? '↑' : '↓') : '',
+      allStatusUrl: audioUrl({ sort, direction }),
+      readyStatusUrl: audioUrl({ status: 'ready', sort, direction }),
+      generatingStatusUrl: audioUrl({ status: 'generating', sort, direction }),
+      failedStatusUrl: audioUrl({ status: 'failed', sort, direction }),
+      ...this.pagination(page, pageSize, total, '/admin/audio', filterParams),
     });
   }
 

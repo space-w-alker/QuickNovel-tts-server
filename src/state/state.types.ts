@@ -105,3 +105,6 @@ export interface AdminAudioRecord extends AudioRecord {
   cacheHits: number;
   cacheMisses: number;
 }
+
+export type AudioSortField = 'updated' | 'cacheHits' | 'size';
+export type SortDirection = 'asc' | 'desc';

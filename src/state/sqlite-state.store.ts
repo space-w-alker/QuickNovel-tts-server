@@ -11,12 +11,14 @@ import {
   AdminAudioRecord,
   AudioClaim,
   AudioRecord,
+  AudioSortField,
   DailyUsageRecord,
   EventLog,
   GenerationRequestRecord,
   HttpRequestLog,
   OperationalSettings,
   QuotaSnapshot,
+  SortDirection,
 } from './state.types';
 
 export class InstallationExistsError extends Error {}
@@ -462,7 +464,20 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
       .all(limit) as EventLog[];
   }
 
-  listAudio(limit = 50, offset = 0, status?: AudioRecord['status']): AdminAudioRecord[] {
+  listAudio(
+    limit = 50,
+    offset = 0,
+    status?: AudioRecord['status'],
+    sort: AudioSortField = 'updated',
+    direction: SortDirection = 'desc',
+  ): AdminAudioRecord[] {
+    const sortExpressions: Record<AudioSortField, string> = {
+      updated: 'a.updated_at',
+      cacheHits: 'cache_hits',
+      size: 'a.bytes',
+    };
+    const order = direction === 'asc' ? 'ASC' : 'DESC';
+    const nullsLast = sort === 'size' ? 'a.bytes IS NULL ASC, ' : '';
     const sql = `SELECT a.*,
                         COUNT(r.id) AS request_count,
                         COALESCE(SUM(CASE WHEN r.cache_hit = 1 THEN 1 ELSE 0 END), 0) AS cache_hits,
@@ -471,7 +486,8 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
                  LEFT JOIN generation_requests r ON r.cache_key = a.cache_key
                  ${status ? 'WHERE a.status = ?' : ''}
                  GROUP BY a.cache_key
-                 ORDER BY a.updated_at DESC LIMIT ? OFFSET ?`;
+                 ORDER BY ${nullsLast}${sortExpressions[sort]} ${order}, a.updated_at DESC, a.cache_key ASC
+                 LIMIT ? OFFSET ?`;
     const rows = (status
       ? this.database.prepare(sql).all(status, limit, offset)
       : this.database.prepare(sql).all(limit, offset)) as AdminAudioRow[];

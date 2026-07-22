@@ -265,6 +265,9 @@ describe('QuickNovel TTS API', () => {
     expect(audioLibrary.body).toContain('Total audio size');
     expect(audioLibrary.body).toContain('Audio records');
     expect(audioLibrary.body).toContain('Cache outcomes');
+    expect(audioLibrary.body).toContain('Requests / cache hits');
+    expect(audioLibrary.body).toContain('sort&#x3D;cacheHits&amp;direction&#x3D;desc');
+    expect(audioLibrary.body).toContain('sort&#x3D;size&amp;direction&#x3D;desc');
     expect(audioLibrary.body).toContain('<audio class="player" controls');
     expect(audioLibrary.body).toContain('Download');
     const deleteCacheKey = audioLibrary.body.match(/\/admin\/audio\/([a-f0-9]{64})\/delete/)?.[1];

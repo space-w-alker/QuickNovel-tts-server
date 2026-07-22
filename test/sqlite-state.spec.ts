@@ -93,4 +93,44 @@ describe('SqliteStateStore', () => {
     expect(store.getAudio('e'.repeat(64))?.status).toBe('ready');
     expect(store.getAudio('e'.repeat(64))?.bytes).toBe(123);
   });
+
+  it('sorts the audio library by cache hits and file size', () => {
+    const firstInstallation = randomUUID();
+    const secondInstallation = randomUUID();
+    store.registerInstallation(firstInstallation);
+    store.registerInstallation(secondInstallation);
+    const first = {
+      cacheKey: '1'.repeat(64),
+      modelId: 'model',
+      modelCacheRevision: 'model@1',
+      voiceId: 'voice',
+      textHash: 'a'.repeat(64),
+      inputCharacters: 1,
+    };
+    const second = {
+      ...first,
+      cacheKey: '2'.repeat(64),
+      textHash: 'b'.repeat(64),
+    };
+
+    store.claimAudio(firstInstallation, first);
+    store.markReady(first.cacheKey, 'audio/mpeg', 100);
+    store.claimAudio(secondInstallation, second);
+    store.markReady(second.cacheKey, 'audio/mpeg', 300);
+    store.claimAudio(firstInstallation, first);
+    store.claimAudio(firstInstallation, first);
+
+    expect(store.listAudio(50, 0, undefined, 'cacheHits', 'desc').map((record) => record.cacheKey)).toEqual([
+      first.cacheKey,
+      second.cacheKey,
+    ]);
+    expect(store.listAudio(50, 0, undefined, 'size', 'asc').map((record) => record.cacheKey)).toEqual([
+      first.cacheKey,
+      second.cacheKey,
+    ]);
+    expect(store.listAudio(50, 0, undefined, 'size', 'desc').map((record) => record.cacheKey)).toEqual([
+      second.cacheKey,
+      first.cacheKey,
+    ]);
+  });
 });
