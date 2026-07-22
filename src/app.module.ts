@@ -1,4 +1,7 @@
 import { Module } from '@nestjs/common';
+import { AdminAuthService } from './admin/admin-auth.service';
+import { AdminController } from './admin/admin.controller';
+import { AdminRendererService } from './admin/admin-renderer.service';
 import { AccessTokenService } from './auth/access-token.service';
 import { AuthGuard } from './auth/auth.guard';
 import { InstallationsController } from './auth/installations.controller';
@@ -13,10 +16,12 @@ import { TtsController } from './tts/tts.controller';
 import { TtsService } from './tts/tts.service';
 
 @Module({
-  controllers: [HealthController, InstallationsController, CatalogController, TtsController],
+  controllers: [AdminController, HealthController, InstallationsController, CatalogController, TtsController],
   providers: [
     AppConfig,
     SqliteStateStore,
+    AdminAuthService,
+    AdminRendererService,
     AccessTokenService,
     AuthGuard,
     CatalogService,

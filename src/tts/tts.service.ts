@@ -44,15 +44,25 @@ export class TtsService implements BeforeApplicationShutdown {
     if (inputCharacters === 0) {
       throw new ApiException(HttpStatus.BAD_REQUEST, 'invalid_text', 'Text must contain a speakable character.');
     }
-    if (inputCharacters > this.config.maxChunkCharacters) {
+    const settings = this.state.getOperationalSettings();
+    if (inputCharacters > settings.maxChunkCharacters) {
       throw new ApiException(
         HttpStatus.PAYLOAD_TOO_LARGE,
         'text_too_large',
-        `Text cannot exceed ${this.config.maxChunkCharacters} characters.`,
+        `Text cannot exceed ${settings.maxChunkCharacters} characters.`,
       );
     }
 
     const cacheKey = audioCacheKey(text, selection.cacheRevision, selection.voice.id);
+    const existing = this.state.getAudio(cacheKey);
+    if (!settings.generationEnabled && (!existing || existing.status === 'failed')) {
+      throw new ApiException(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        'generation_paused',
+        'New speech generation is temporarily paused by the service operator.',
+        true,
+      );
+    }
     let claim;
     try {
       claim = this.state.claimAudio(installationId, {
@@ -71,6 +81,19 @@ export class TtsService implements BeforeApplicationShutdown {
     }
 
     if (claim.claimed) {
+      this.state.recordEvent({
+        severity: 'info',
+        category: 'generation',
+        action: 'generation_started',
+        message: 'Speech generation started.',
+        context: JSON.stringify({
+          cacheKey: claim.record.cacheKey,
+          jobId: claim.record.jobId,
+          installationId,
+          voiceId: claim.record.voiceId,
+          inputCharacters,
+        }),
+      });
       const generation = this.generate(claim.record.cacheKey, text, selection);
       this.activeGenerations.add(generation);
       void generation.finally(() => this.activeGenerations.delete(generation));
@@ -107,10 +130,24 @@ export class TtsService implements BeforeApplicationShutdown {
       });
       const bytes = await this.storage.save(cacheKey, result.audio);
       this.state.markReady(cacheKey, result.contentType, bytes);
+      this.state.recordEvent({
+        severity: 'info',
+        category: 'generation',
+        action: 'generation_completed',
+        message: 'Speech generation completed.',
+        context: JSON.stringify({ cacheKey, bytes, generationId: result.generationId }),
+      });
       this.logger.log(`Generated audio cache_key=${cacheKey} bytes=${bytes}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown speech generation error';
       this.state.markFailed(cacheKey, 'generation_failed', 'Speech generation failed.');
+      this.state.recordEvent({
+        severity: 'error',
+        category: 'generation',
+        action: 'generation_failed',
+        message: 'Speech generation failed.',
+        context: JSON.stringify({ cacheKey, error: this.observableGenerationError(message) }),
+      });
       this.logger.error(`Speech generation failed cache_key=${cacheKey}: ${message}`);
     }
   }
@@ -155,5 +192,10 @@ export class TtsService implements BeforeApplicationShutdown {
         },
       },
     };
+  }
+
+  private observableGenerationError(message: string): string {
+    if (message.startsWith('OpenRouter returned ')) return message.split(':', 1)[0] ?? 'OpenRouter request failed';
+    return message.slice(0, 200);
   }
 }

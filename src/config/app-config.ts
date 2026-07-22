@@ -23,6 +23,14 @@ function secret(name: string): string {
   return value;
 }
 
+function required(name: string, minimumLength: number): string {
+  const value = process.env[name];
+  if (!value || value.length < minimumLength) {
+    throw new Error(`${name} must contain at least ${minimumLength} characters`);
+  }
+  return value;
+}
+
 @Injectable()
 export class AppConfig {
   readonly port = integer('PORT', 3000);
@@ -35,6 +43,12 @@ export class AppConfig {
   readonly audioUrlTtlSeconds = integer('AUDIO_URL_TTL_SECONDS', 900);
   readonly rateLimitMax = integer('RATE_LIMIT_MAX', 300);
   readonly rateLimitWindow = process.env.RATE_LIMIT_WINDOW ?? '1 minute';
+  readonly superAdminUsername = process.env.SUPER_ADMIN_USERNAME ?? 'superadmin';
+  readonly superAdminPassword = required('SUPER_ADMIN_PASSWORD', 12);
+  readonly adminSessionTtlSeconds = integer('ADMIN_SESSION_TTL_SECONDS', 12 * 60 * 60);
+  readonly secureAdminCookie = process.env.ADMIN_SECURE_COOKIE
+    ? process.env.ADMIN_SECURE_COOKIE === 'true'
+    : this.publicBaseUrl.startsWith('https://');
   readonly openRouterApiKey = process.env.OPENROUTER_API_KEY ?? '';
   readonly openRouterBaseUrl = (process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1').replace(/\/$/, '');
   readonly openRouterHttpReferer = process.env.OPENROUTER_HTTP_REFERER;

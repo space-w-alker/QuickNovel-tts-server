@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { AppConfig } from '../config/app-config';
 
@@ -20,6 +20,16 @@ export class AudioStorageService {
 
   stream(cacheKey: string): NodeJS.ReadableStream {
     return createReadStream(this.path(cacheKey));
+  }
+
+  async remove(cacheKey: string): Promise<boolean> {
+    try {
+      await unlink(this.path(cacheKey));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
   }
 
   signedUrl(cacheKey: string, now = new Date()): { url: string; expiresAt: string } {

@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import cookie from '@fastify/cookie';
 import { ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -33,6 +34,9 @@ describe('QuickNovel TTS API', () => {
       PUBLIC_BASE_URL: 'http://localhost:3000',
       ACCESS_TOKEN_SECRET: 'access-token-test-secret-value-123456789',
       AUDIO_SIGNING_SECRET: 'audio-signing-test-secret-value-1234567',
+      SUPER_ADMIN_USERNAME: 'superadmin',
+      SUPER_ADMIN_PASSWORD: 'test-admin-password-12345',
+      ADMIN_SECURE_COOKIE: 'false',
       TTS_MODEL_ID: 'quicknovel-default',
       TTS_MODEL_CACHE_REVISION: 'test-model@1',
       TTS_OPENROUTER_MODEL: 'provider/test-model',
@@ -46,6 +50,7 @@ describe('QuickNovel TTS API', () => {
       .useValue(generator)
       .compile();
     app = module.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
+    await app.register(cookie);
     app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
     app.useGlobalFilters(new ApiExceptionFilter());
     await app.init();
@@ -143,6 +148,120 @@ describe('QuickNovel TTS API', () => {
     const malformed = await resolve({ model_id: 'quicknovel-default' });
     expect(malformed.statusCode).toBe(400);
     expect(malformed.json().error.code).toBe('validation_failed');
+  });
+
+  it('authenticates the admin console and applies audited runtime controls', async () => {
+    const anonymous = await app.inject({ method: 'GET', url: '/admin/overview' });
+    expect(anonymous.statusCode).toBe(302);
+    expect(anonymous.headers.location).toBe('/admin/login');
+
+    const invalid = await app.inject({
+      method: 'POST',
+      url: '/admin/login',
+      payload: 'username=superadmin&password=wrong-password',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    });
+    expect(invalid.headers.location).toBe('/admin/login?error=invalid');
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/admin/login',
+      payload: 'username=superadmin&password=test-admin-password-12345',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    });
+    expect(login.statusCode).toBe(302);
+    const sessionCookie = login.headers['set-cookie']?.split(';')[0];
+    expect(sessionCookie).toContain('quicknovel_admin_session=');
+
+    const settingsPage = await app.inject({
+      method: 'GET',
+      url: '/admin/settings',
+      headers: { cookie: sessionCookie },
+    });
+    expect(settingsPage.statusCode).toBe(200);
+    expect(settingsPage.body).toContain('Runtime controls');
+    const csrfToken = settingsPage.body.match(/name="csrf_token" value="([^"]+)"/)?.[1];
+    expect(csrfToken).toBeTruthy();
+
+    const pause = await app.inject({
+      method: 'POST',
+      url: '/admin/settings',
+      headers: { cookie: sessionCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({
+        csrf_token: csrfToken ?? '',
+        daily_character_quota: '100000',
+        daily_generation_quota: '1000',
+        max_chunk_characters: '4000',
+        log_retention_days: '30',
+      }).toString(),
+    });
+    expect(pause.statusCode).toBe(302);
+
+    const pausedGeneration = await resolve({
+      model_id: 'quicknovel-default',
+      voice_id: 'alloy',
+      text: 'This uncached request should be paused.',
+      chunker_version: 1,
+    });
+    expect(pausedGeneration.statusCode).toBe(503);
+    expect(pausedGeneration.json().error.code).toBe('generation_paused');
+
+    const resume = await app.inject({
+      method: 'POST',
+      url: '/admin/settings',
+      headers: { cookie: sessionCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({
+        csrf_token: csrfToken ?? '',
+        generation_enabled: 'on',
+        daily_character_quota: '100000',
+        daily_generation_quota: '1000',
+        max_chunk_characters: '4000',
+        log_retention_days: '30',
+      }).toString(),
+    });
+    expect(resume.statusCode).toBe(302);
+
+    const events = await app.inject({ method: 'GET', url: '/admin/events', headers: { cookie: sessionCookie } });
+    expect(events.statusCode).toBe(200);
+    expect(events.body).toContain('settings_updated');
+
+    const generationRequests = await app.inject({
+      method: 'GET',
+      url: '/admin/generation-requests',
+      headers: { cookie: sessionCookie },
+    });
+    expect(generationRequests.statusCode).toBe(200);
+    expect(generationRequests.body).toContain('Cache hit');
+    expect(generationRequests.body).toContain('Cache miss');
+
+    const audioLibrary = await app.inject({
+      method: 'GET',
+      url: '/admin/audio',
+      headers: { cookie: sessionCookie },
+    });
+    expect(audioLibrary.statusCode).toBe(200);
+    expect(audioLibrary.body).toContain('Audio library');
+    expect(audioLibrary.body).toContain('<audio class="player" controls');
+    expect(audioLibrary.body).toContain('Download');
+    const deleteCacheKey = audioLibrary.body.match(/\/admin\/audio\/([a-f0-9]{64})\/delete/)?.[1];
+    expect(deleteCacheKey).toBeTruthy();
+
+    const deleted = await app.inject({
+      method: 'POST',
+      url: `/admin/audio/${deleteCacheKey}/delete`,
+      headers: { cookie: sessionCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ csrf_token: csrfToken ?? '' }).toString(),
+    });
+    expect(deleted.statusCode).toBe(302);
+    expect(deleted.headers.location).toBe('/admin/audio?notice=audio-deleted');
+
+    const preservedHistory = await app.inject({
+      method: 'GET',
+      url: '/admin/generation-requests',
+      headers: { cookie: sessionCookie },
+    });
+    expect(preservedHistory.body).toContain(deleteCacheKey);
+    expect(preservedHistory.body).toContain('deleted');
   });
 
   async function resolve(payload: Record<string, unknown>) {

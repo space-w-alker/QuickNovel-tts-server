@@ -46,3 +46,62 @@ export interface AudioClaim {
   record: AudioRecord;
   quota: QuotaSnapshot;
 }
+
+export interface OperationalSettings {
+  generationEnabled: boolean;
+  dailyCharacterQuota: number;
+  dailyGenerationQuota: number;
+  maxChunkCharacters: number;
+  logRetentionDays: number;
+}
+
+export interface AdminSessionRecord {
+  username: string;
+  csrfToken: string;
+  expiresAt: string;
+}
+
+export interface HttpRequestLog {
+  requestId: string;
+  method: string;
+  path: string;
+  statusCode: number;
+  durationMs: number;
+  ip: string;
+  userAgent?: string;
+  installationId?: string;
+  createdAt: string;
+}
+
+export interface EventLog {
+  id: string;
+  severity: 'info' | 'warning' | 'error';
+  category: string;
+  action: string;
+  message: string;
+  context?: string;
+  createdAt: string;
+}
+
+export interface GenerationRequestRecord {
+  id: string;
+  installationId: string;
+  cacheKey: string;
+  jobId: string;
+  cacheHit: boolean;
+  createdAt: string;
+  audioStatus?: AudioStatus;
+  voiceId?: string;
+  modelId?: string;
+  inputCharacters?: number;
+  contentType?: string;
+  bytes?: number;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+export interface AdminAudioRecord extends AudioRecord {
+  requestCount: number;
+  cacheHits: number;
+  cacheMisses: number;
+}
