@@ -1,10 +1,17 @@
 import { createHash } from 'node:crypto';
 
-export const CACHE_KEY_VERSION = 'quicknovel-tts-cache-v1';
+export const CACHE_KEY_VERSION = 'quicknovel-tts-cache-v3';
 export const CHUNKER_VERSION = 1;
 
-export function normalizeText(text: string): string {
+export function prepareSpeechText(text: string): string {
   return text.normalize('NFC').replace(/\r\n?/g, '\n').trim();
+}
+
+export function normalizeText(text: string): string {
+  return prepareSpeechText(text)
+    .toLowerCase()
+    .replace(/\p{White_Space}+/gu, '')
+    .normalize('NFC');
 }
 
 export function textHash(normalizedText: string): string {

@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { AppConfig } from '../config/app-config';
+import { AudioTranscoder } from './audio-transcoder';
 
 export interface SpeechGenerationRequest {
   model: string;
   voice: string;
   text: string;
+  responseFormat: 'mp3' | 'pcm';
 }
 
 export interface SpeechGenerationResult {
@@ -19,7 +21,10 @@ export abstract class SpeechGenerator {
 
 @Injectable()
 export class OpenRouterSpeechGenerator extends SpeechGenerator {
-  constructor(private readonly config: AppConfig) {
+  constructor(
+    private readonly config: AppConfig,
+    private readonly transcoder: AudioTranscoder,
+  ) {
     super();
   }
 
@@ -32,7 +37,7 @@ export class OpenRouterSpeechGenerator extends SpeechGenerator {
       headers: {
         authorization: `Bearer ${this.config.openRouterApiKey}`,
         'content-type': 'application/json',
-        accept: 'audio/mpeg',
+        accept: request.responseFormat === 'pcm' ? 'audio/pcm' : 'audio/mpeg',
         ...(this.config.openRouterHttpReferer ? { 'http-referer': this.config.openRouterHttpReferer } : {}),
         'x-openrouter-title': this.config.openRouterAppTitle,
       },
@@ -40,7 +45,7 @@ export class OpenRouterSpeechGenerator extends SpeechGenerator {
         model: request.model,
         input: request.text,
         voice: request.voice,
-        response_format: 'mp3',
+        response_format: request.responseFormat,
       }),
       signal: AbortSignal.timeout(60_000),
     });
@@ -53,15 +58,19 @@ export class OpenRouterSpeechGenerator extends SpeechGenerator {
     if (declaredLength > this.config.maxAudioBytes) {
       throw new Error(`OpenRouter audio exceeds the ${this.config.maxAudioBytes}-byte limit`);
     }
-    const contentType = response.headers.get('content-type')?.split(';')[0] ?? 'audio/mpeg';
-    if (contentType !== 'audio/mpeg' && contentType !== 'audio/mp3') {
+    const expectedContentTypes = request.responseFormat === 'pcm' ? ['audio/pcm'] : ['audio/mpeg', 'audio/mp3'];
+    const contentType = response.headers.get('content-type')?.split(';')[0] ?? expectedContentTypes[0];
+    if (!expectedContentTypes.includes(contentType)) {
       throw new Error(`OpenRouter returned unsupported content type ${contentType}`);
     }
-    const audio = Buffer.from(await response.arrayBuffer());
-    if (audio.length === 0) throw new Error('OpenRouter returned an empty audio response');
-    if (audio.length > this.config.maxAudioBytes) {
+    const providerAudio = Buffer.from(await response.arrayBuffer());
+    if (providerAudio.length === 0) throw new Error('OpenRouter returned an empty audio response');
+    if (providerAudio.length > this.config.maxAudioBytes) {
       throw new Error(`OpenRouter audio exceeds the ${this.config.maxAudioBytes}-byte limit`);
     }
+    const audio = request.responseFormat === 'pcm'
+      ? await this.transcoder.pcmToMp3(providerAudio, this.config.maxAudioBytes)
+      : providerAudio;
     return {
       audio,
       contentType: 'audio/mpeg',

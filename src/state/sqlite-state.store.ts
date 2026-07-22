@@ -51,6 +51,17 @@ export interface AdminInstallationRow {
   generations: number;
 }
 
+export interface AudioLibraryMetrics {
+  totalRecords: number;
+  ready: number;
+  generating: number;
+  failed: number;
+  totalBytes: number;
+  trackedRequests: number;
+  cacheHits: number;
+  cacheMisses: number;
+}
+
 interface AudioRow {
   cache_key: string;
   job_id: string;
@@ -477,6 +488,28 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
       ? this.database.prepare('SELECT COUNT(*) AS total FROM audio_cache WHERE status = ?').get(status)
       : this.database.prepare('SELECT COUNT(*) AS total FROM audio_cache').get()) as { total: number };
     return row.total;
+  }
+
+  getAudioLibraryMetrics(): AudioLibraryMetrics {
+    const audio = this.database
+      .prepare(
+        `SELECT COUNT(*) AS totalRecords,
+                COALESCE(SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END), 0) AS ready,
+                COALESCE(SUM(CASE WHEN status = 'generating' THEN 1 ELSE 0 END), 0) AS generating,
+                COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+                COALESCE(SUM(bytes), 0) AS totalBytes
+         FROM audio_cache`,
+      )
+      .get() as Omit<AudioLibraryMetrics, 'trackedRequests' | 'cacheHits' | 'cacheMisses'>;
+    const requests = this.database
+      .prepare(
+        `SELECT COUNT(*) AS trackedRequests,
+                COALESCE(SUM(CASE WHEN cache_hit = 1 THEN 1 ELSE 0 END), 0) AS cacheHits,
+                COALESCE(SUM(CASE WHEN cache_hit = 0 THEN 1 ELSE 0 END), 0) AS cacheMisses
+         FROM generation_requests`,
+      )
+      .get() as Pick<AudioLibraryMetrics, 'trackedRequests' | 'cacheHits' | 'cacheMisses'>;
+    return { ...audio, ...requests };
   }
 
   listGenerationRequests(limit = 100, offset = 0, cacheHit?: boolean): GenerationRequestRecord[] {

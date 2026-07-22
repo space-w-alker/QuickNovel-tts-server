@@ -116,7 +116,8 @@ export class AdminController {
       ...(record.status === 'ready' ? { playbackUrl: this.storage.signedUrl(record.cacheKey).url } : {}),
     }));
     this.page(reply, 'audio', session, {
-      active: 'audio', audio, status: status ?? 'all', notice: this.notice(notice),
+      active: 'audio', audio, metrics: this.state.getAudioLibraryMetrics(),
+      status: status ?? 'all', notice: this.notice(notice),
       ...this.pagination(page, pageSize, total, '/admin/audio', status ? { status } : {}),
     });
   }
@@ -188,9 +189,8 @@ export class AdminController {
       system: {
         node: process.version, environment: process.env.NODE_ENV ?? 'development', uptimeSeconds: Math.round(process.uptime()),
         rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, databaseBytes: this.state.databaseSizeBytes(),
-        publicBaseUrl: this.config.publicBaseUrl, dataDir: this.config.dataDir, model: this.config.model.id,
-        providerModel: this.config.model.openRouterModel, cacheRevision: this.config.model.cacheRevision,
-        voices: this.config.model.voices, openRouterConfigured: Boolean(this.config.openRouterApiKey),
+        publicBaseUrl: this.config.publicBaseUrl, dataDir: this.config.dataDir, models: this.config.models,
+        openRouterConfigured: Boolean(this.config.openRouterApiKey),
         rateLimit: `${this.config.rateLimitMax} / ${this.config.rateLimitWindow}`,
         accessTokenTtlSeconds: this.config.accessTokenTtlSeconds,
         audioUrlTtlSeconds: this.config.audioUrlTtlSeconds,

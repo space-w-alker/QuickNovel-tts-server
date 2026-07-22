@@ -9,6 +9,7 @@ import { AppConfig } from './config/app-config';
 import { HealthController } from './health.controller';
 import { SqliteStateStore } from './state/sqlite-state.store';
 import { AudioStorageService } from './tts/audio-storage.service';
+import { AudioTranscoder } from './tts/audio-transcoder';
 import { CatalogController } from './tts/catalog.controller';
 import { CatalogService } from './tts/catalog.service';
 import { OpenRouterSpeechGenerator, SpeechGenerator } from './tts/speech-generator';
@@ -26,6 +27,7 @@ import { TtsService } from './tts/tts.service';
     AuthGuard,
     CatalogService,
     AudioStorageService,
+    AudioTranscoder,
     TtsService,
     OpenRouterSpeechGenerator,
     { provide: SpeechGenerator, useExisting: OpenRouterSpeechGenerator },

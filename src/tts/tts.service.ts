@@ -4,7 +4,7 @@ import { ApiException } from '../common/api-error';
 import { QuotaExceededError, SqliteStateStore } from '../state/sqlite-state.store';
 import { AudioRecord, QuotaSnapshot } from '../state/state.types';
 import { AudioStorageService } from './audio-storage.service';
-import { audioCacheKey, CHUNKER_VERSION, normalizeText, textHash } from './cache-key';
+import { audioCacheKey, CHUNKER_VERSION, normalizeText, prepareSpeechText, textHash } from './cache-key';
 import { CatalogService, ResolvedCatalogSelection } from './catalog.service';
 import { ResolveChunkDto } from './dto';
 import { SpeechGenerator } from './speech-generator';
@@ -39,9 +39,10 @@ export class TtsService implements BeforeApplicationShutdown {
         'The requested model and voice combination is unavailable.',
       );
     }
-    const text = normalizeText(dto.text);
-    const inputCharacters = [...text].length;
-    if (inputCharacters === 0) {
+    const speechText = prepareSpeechText(dto.text);
+    const normalizedText = normalizeText(speechText);
+    const inputCharacters = [...speechText].length;
+    if (inputCharacters === 0 || normalizedText.length === 0) {
       throw new ApiException(HttpStatus.BAD_REQUEST, 'invalid_text', 'Text must contain a speakable character.');
     }
     const settings = this.state.getOperationalSettings();
@@ -53,7 +54,7 @@ export class TtsService implements BeforeApplicationShutdown {
       );
     }
 
-    const cacheKey = audioCacheKey(text, selection.cacheRevision, selection.voice.id);
+    const cacheKey = audioCacheKey(normalizedText, selection.cacheRevision, selection.voice.id);
     const existing = this.state.getAudio(cacheKey);
     if (!settings.generationEnabled && (!existing || existing.status === 'failed')) {
       throw new ApiException(
@@ -70,7 +71,7 @@ export class TtsService implements BeforeApplicationShutdown {
         modelId: selection.publicModelId,
         modelCacheRevision: selection.cacheRevision,
         voiceId: selection.voice.id,
-        textHash: textHash(text),
+        textHash: textHash(normalizedText),
         inputCharacters,
       });
     } catch (error) {
@@ -94,7 +95,7 @@ export class TtsService implements BeforeApplicationShutdown {
           inputCharacters,
         }),
       });
-      const generation = this.generate(claim.record.cacheKey, text, selection);
+      const generation = this.generate(claim.record.cacheKey, speechText, selection);
       this.activeGenerations.add(generation);
       void generation.finally(() => this.activeGenerations.delete(generation));
     }
@@ -125,8 +126,9 @@ export class TtsService implements BeforeApplicationShutdown {
     try {
       const result = await this.generator.generate({
         model: selection.openRouterModel,
-        voice: selection.voice.id,
+        voice: selection.voice.providerVoice,
         text,
+        responseFormat: selection.providerAudioFormat,
       });
       const bytes = await this.storage.save(cacheKey, result.audio);
       this.state.markReady(cacheKey, result.contentType, bytes);

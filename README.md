@@ -5,6 +5,7 @@ NestJS/Fastify service that generates speech through OpenRouter and permanently 
 ## Requirements
 
 - Node.js 22+
+- FFmpeg (used to normalize provider PCM audio to MP3; included in the production image)
 - A writable persistent disk
 - An OpenRouter API key with access to the configured speech model
 
@@ -57,12 +58,12 @@ The service also applies a global per-IP request limit, in addition to per-insta
 
 1. `POST /v1/installations` registers an anonymous app installation.
 2. `POST /v1/installations/token` refreshes its short-lived access token.
-3. `GET /v1/tts/catalog` returns the configured model and voices.
+3. `GET /v1/tts/catalog` returns the Standard, High and Ultra quality presets with one male and one female voice each.
 4. `POST /v1/tts/chunks:resolve` returns cached audio (`200`) or a generation job (`202`).
 5. `GET /v1/tts/jobs/:jobId` polls generation.
 6. The returned, expiring signed URL serves the MP3 from `/v1/tts/audio/:cacheKey`.
 
-The cache identity includes normalized text, model cache revision, voice, and MP3 format. Playback speed is intentionally absent because the Android player applies it locally. Cache hits do not consume generation quota.
+Provider model names, provider voice names, and native audio formats remain server-side implementation details. Google PCM output is transcoded to 96 kbps MP3 before storage. The cache identity includes normalized text, model cache revision, public voice selection, and MP3 format. Playback speed is intentionally absent because the Android player applies it locally. Cache hits do not consume generation quota.
 
 See [.env.example](.env.example) for catalog, quota, and server configuration.
 The complete request and response contract is documented in [docs/api.md](docs/api.md).

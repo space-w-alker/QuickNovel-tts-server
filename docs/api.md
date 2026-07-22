@@ -47,20 +47,23 @@ Returns `200` with a new access token and current quota. The refresh token is no
 
 ```json
 {
-  "catalog_version": "openai/gpt-4o-mini-tts-2025-12-15@1",
+  "catalog_version": "standard:standard@1|high:high@1|ultra:ultra@1",
   "models": [
     {
-      "id": "quicknovel-default",
-      "display_name": "QuickNovel Voice",
-      "cache_revision": "openai/gpt-4o-mini-tts-2025-12-15@1",
+      "id": "standard",
+      "display_name": "Standard",
+      "cache_revision": "standard@1",
       "output_format": "mp3",
-      "voices": [{ "id": "alloy", "display_name": "Alloy", "locale": "en-US" }]
+      "voices": [
+        { "id": "male", "display_name": "Male", "locale": "en-US" },
+        { "id": "female", "display_name": "Female", "locale": "en-US" }
+      ]
     }
   ]
 }
 ```
 
-Only model/voice combinations in this response can be resolved.
+The response contains the same two voices for the `high` and `ultra` models. Only model/voice combinations in this response can be resolved. Provider identities and native output formats are intentionally hidden; every public preset produces MP3.
 
 ## Resolve a speech chunk
 
@@ -68,8 +71,8 @@ Only model/voice combinations in this response can be resolved.
 
 ```json
 {
-  "model_id": "quicknovel-default",
-  "voice_id": "alloy",
+  "model_id": "standard",
+  "voice_id": "male",
   "text": "The exact sentence to speak.",
   "chunker_version": 1
 }

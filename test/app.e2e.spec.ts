@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppModule } from '../src/app.module';
 import { ApiExceptionFilter } from '../src/common/api-error';
+import { CatalogService } from '../src/tts/catalog.service';
 import { SpeechGenerationRequest, SpeechGenerationResult, SpeechGenerator } from '../src/tts/speech-generator';
 
 class FakeSpeechGenerator extends SpeechGenerator {
@@ -37,10 +38,6 @@ describe('QuickNovel TTS API', () => {
       SUPER_ADMIN_USERNAME: 'superadmin',
       SUPER_ADMIN_PASSWORD: 'test-admin-password-12345',
       ADMIN_SECURE_COOKIE: 'false',
-      TTS_MODEL_ID: 'quicknovel-default',
-      TTS_MODEL_CACHE_REVISION: 'test-model@1',
-      TTS_OPENROUTER_MODEL: 'provider/test-model',
-      TTS_VOICES: 'alloy:Alloy:en-US,nova:Nova:en-US',
       DAILY_CHARACTER_QUOTA: '100000',
       DAILY_GENERATION_QUOTA: '1000',
     });
@@ -79,13 +76,25 @@ describe('QuickNovel TTS API', () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(catalog.statusCode).toBe(200);
+    expect(catalog.json().models).toHaveLength(3);
+    expect(catalog.json().models.map((model: { id: string }) => model.id)).toEqual(['standard', 'high', 'ultra']);
     expect(catalog.json().models[0].voices).toHaveLength(2);
+    expect(app.get(CatalogService).resolve('high', 'female')).toMatchObject({
+      openRouterModel: 'x-ai/grok-voice-tts-1.0',
+      providerAudioFormat: 'mp3',
+      voice: { providerVoice: 'ara' },
+    });
+    expect(app.get(CatalogService).resolve('ultra', 'male')).toMatchObject({
+      openRouterModel: 'google/gemini-3.1-flash-tts-preview',
+      providerAudioFormat: 'pcm',
+      voice: { providerVoice: 'Puck' },
+    });
   });
 
   it('generates once, polls the job, serves signed audio, and reuses the cache', async () => {
     const payload = {
-      model_id: 'quicknovel-default',
-      voice_id: 'alloy',
+      model_id: 'standard',
+      voice_id: 'male',
       text: 'A reusable sentence.',
       chunker_version: 1,
     };
@@ -112,13 +121,25 @@ describe('QuickNovel TTS API', () => {
     expect(cached.statusCode).toBe(200);
     expect(cached.json().cache_key).toBe(firstBody.cache_key);
     expect(cached.json().cache_hit).toBe(true);
-    expect(generator.calls.filter((call) => call.text === payload.text)).toHaveLength(1);
+    const calls = generator.calls.filter((call) => call.text === payload.text);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      model: 'hexgrad/kokoro-82m',
+      voice: 'am_echo',
+      responseFormat: 'mp3',
+    });
+
+    const normalizedEquivalent = await resolve({ ...payload, text: '  A REUSABLE\n sentence.  ' });
+    expect(normalizedEquivalent.statusCode).toBe(200);
+    expect(normalizedEquivalent.json().cache_key).toBe(firstBody.cache_key);
+    expect(normalizedEquivalent.json().cache_hit).toBe(true);
+    expect(generator.calls).toHaveLength(1);
   });
 
   it('deduplicates concurrent generation requests', async () => {
     const payload = {
-      model_id: 'quicknovel-default',
-      voice_id: 'nova',
+      model_id: 'standard',
+      voice_id: 'female',
       text: 'A concurrent sentence.',
       chunker_version: 1,
     };
@@ -138,14 +159,14 @@ describe('QuickNovel TTS API', () => {
   it('validates catalog combinations and chunk sizes', async () => {
     const unavailable = await resolve({
       model_id: 'unknown',
-      voice_id: 'alloy',
+      voice_id: 'male',
       text: 'Hello.',
       chunker_version: 1,
     });
     expect(unavailable.statusCode).toBe(400);
     expect(unavailable.json().error.code).toBe('catalog_entry_unavailable');
 
-    const malformed = await resolve({ model_id: 'quicknovel-default' });
+    const malformed = await resolve({ model_id: 'standard' });
     expect(malformed.statusCode).toBe(400);
     expect(malformed.json().error.code).toBe('validation_failed');
   });
@@ -198,8 +219,8 @@ describe('QuickNovel TTS API', () => {
     expect(pause.statusCode).toBe(302);
 
     const pausedGeneration = await resolve({
-      model_id: 'quicknovel-default',
-      voice_id: 'alloy',
+      model_id: 'standard',
+      voice_id: 'male',
       text: 'This uncached request should be paused.',
       chunker_version: 1,
     });
@@ -241,6 +262,9 @@ describe('QuickNovel TTS API', () => {
     });
     expect(audioLibrary.statusCode).toBe(200);
     expect(audioLibrary.body).toContain('Audio library');
+    expect(audioLibrary.body).toContain('Total audio size');
+    expect(audioLibrary.body).toContain('Audio records');
+    expect(audioLibrary.body).toContain('Cache outcomes');
     expect(audioLibrary.body).toContain('<audio class="player" controls');
     expect(audioLibrary.body).toContain('Download');
     const deleteCacheKey = audioLibrary.body.match(/\/admin\/audio\/([a-f0-9]{64})\/delete/)?.[1];

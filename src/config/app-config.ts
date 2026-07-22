@@ -5,7 +5,55 @@ export interface VoiceConfig {
   id: string;
   displayName: string;
   locale: string;
+  providerVoice: string;
 }
+
+export type ProviderAudioFormat = 'mp3' | 'pcm';
+
+export interface TtsModelConfig {
+  id: string;
+  displayName: string;
+  openRouterModel: string;
+  cacheRevision: string;
+  providerAudioFormat: ProviderAudioFormat;
+  voices: VoiceConfig[];
+}
+
+const DEFAULT_TTS_MODELS: TtsModelConfig[] = [
+  {
+    id: 'standard',
+    displayName: 'Standard',
+    openRouterModel: 'hexgrad/kokoro-82m',
+    cacheRevision: 'standard@1',
+    providerAudioFormat: 'mp3',
+    voices: [
+      { id: 'male', displayName: 'Male', locale: 'en-US', providerVoice: 'am_echo' },
+      { id: 'female', displayName: 'Female', locale: 'en-US', providerVoice: 'af_heart' },
+    ],
+  },
+  {
+    id: 'high',
+    displayName: 'High',
+    openRouterModel: 'x-ai/grok-voice-tts-1.0',
+    cacheRevision: 'high@1',
+    providerAudioFormat: 'mp3',
+    voices: [
+      { id: 'male', displayName: 'Male', locale: 'en-US', providerVoice: 'rex' },
+      { id: 'female', displayName: 'Female', locale: 'en-US', providerVoice: 'ara' },
+    ],
+  },
+  {
+    id: 'ultra',
+    displayName: 'Ultra',
+    openRouterModel: 'google/gemini-3.1-flash-tts-preview',
+    cacheRevision: 'ultra@1',
+    providerAudioFormat: 'pcm',
+    voices: [
+      { id: 'male', displayName: 'Male', locale: 'en-US', providerVoice: 'Puck' },
+      { id: 'female', displayName: 'Female', locale: 'en-US', providerVoice: 'Zephyr' },
+    ],
+  },
+];
 
 function integer(name: string, fallback: number): number {
   const value = Number.parseInt(process.env[name] ?? String(fallback), 10);
@@ -57,25 +105,42 @@ export class AppConfig {
   readonly maxAudioBytes = integer('MAX_AUDIO_BYTES', 50 * 1024 * 1024);
   readonly dailyCharacterQuota = integer('DAILY_CHARACTER_QUOTA', 100_000);
   readonly dailyGenerationQuota = integer('DAILY_GENERATION_QUOTA', 1_000);
-  readonly model = {
-    id: process.env.TTS_MODEL_ID ?? 'quicknovel-default',
-    displayName: process.env.TTS_MODEL_DISPLAY_NAME ?? 'QuickNovel Voice',
-    openRouterModel: process.env.TTS_OPENROUTER_MODEL ?? 'openai/gpt-4o-mini-tts',
-    cacheRevision: process.env.TTS_MODEL_CACHE_REVISION ?? 'openai/gpt-4o-mini-tts@1',
-    voices: this.parseVoices(process.env.TTS_VOICES ?? 'alloy:Alloy:en-US'),
-  };
+  readonly models = this.parseModels(process.env.TTS_MODELS_JSON);
 
-  private parseVoices(value: string): VoiceConfig[] {
-    const voices = value.split(',').map((entry) => {
-      const [id, displayName, locale] = entry.split(':').map((part) => part.trim());
-      if (!id || !displayName || !locale) {
-        throw new Error(`Invalid TTS_VOICES entry: ${entry}`);
+  private parseModels(value: string | undefined): TtsModelConfig[] {
+    const models: unknown = value ? JSON.parse(value) : DEFAULT_TTS_MODELS;
+    if (!Array.isArray(models) || models.length === 0) throw new Error('TTS_MODELS_JSON must contain at least one model');
+    const parsed = models.map((candidate, index) => this.parseModel(candidate, index));
+    if (new Set(parsed.map((model) => model.id)).size !== parsed.length) {
+      throw new Error('TTS_MODELS_JSON contains duplicate model IDs');
+    }
+    return parsed;
+  }
+
+  private parseModel(candidate: unknown, index: number): TtsModelConfig {
+    if (!candidate || typeof candidate !== 'object') throw new Error(`Invalid TTS model at index ${index}`);
+    const model = candidate as Partial<TtsModelConfig>;
+    const required = [model.id, model.displayName, model.openRouterModel, model.cacheRevision];
+    if (required.some((field) => typeof field !== 'string' || field.trim().length === 0)) {
+      throw new Error(`Invalid TTS model at index ${index}`);
+    }
+    if (model.providerAudioFormat !== 'mp3' && model.providerAudioFormat !== 'pcm') {
+      throw new Error(`Invalid provider audio format for TTS model ${model.id}`);
+    }
+    if (!Array.isArray(model.voices) || model.voices.length === 0) {
+      throw new Error(`TTS model ${model.id} must contain at least one voice`);
+    }
+    const voices = model.voices.map((voice, voiceIndex) => {
+      if (!voice || typeof voice !== 'object') throw new Error(`Invalid voice ${voiceIndex} for TTS model ${model.id}`);
+      const requiredVoice = [voice.id, voice.displayName, voice.locale, voice.providerVoice];
+      if (requiredVoice.some((field) => typeof field !== 'string' || field.trim().length === 0)) {
+        throw new Error(`Invalid voice ${voiceIndex} for TTS model ${model.id}`);
       }
-      return { id, displayName, locale };
+      return voice;
     });
     if (new Set(voices.map((voice) => voice.id)).size !== voices.length) {
-      throw new Error('TTS_VOICES contains duplicate voice IDs');
+      throw new Error(`TTS model ${model.id} contains duplicate voice IDs`);
     }
-    return voices;
+    return { ...model, voices } as TtsModelConfig;
   }
 }
