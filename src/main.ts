@@ -6,6 +6,7 @@ import rateLimit from '@fastify/rate-limit';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
+import { randomUUID } from 'node:crypto';
 import { AppModule } from './app.module';
 import { ApiExceptionFilter } from './common/api-error';
 import { AppConfig } from './config/app-config';
@@ -23,6 +24,7 @@ async function bootstrap(): Promise<void> {
   const config = app.get(AppConfig);
   await app.register(rateLimit, { max: config.rateLimitMax, timeWindow: config.rateLimitWindow });
   const state = app.get(SqliteStateStore);
+  const runtimeId = randomUUID();
   const startedAt = new Map<string, number>();
   const server = app.getHttpAdapter().getInstance();
   server.addHook('onRequest', (request, _reply, done) => {
@@ -35,9 +37,10 @@ async function bootstrap(): Promise<void> {
     const path = request.url.split('?')[0] ?? request.url;
     if (!path.startsWith('/admin') && path !== '/health') {
       const installationId = (request as typeof request & { installationId?: string }).installationId;
+      const traceId = `${runtimeId}:${request.id}`;
       try {
         state.recordHttpRequest({
-          requestId: request.id,
+          requestId: traceId,
           method: request.method,
           path,
           statusCode: reply.statusCode,
@@ -53,7 +56,7 @@ async function bootstrap(): Promise<void> {
             category: 'http',
             action: 'server_error_response',
             message: `${request.method} ${path} returned ${reply.statusCode}.`,
-            context: JSON.stringify({ requestId: request.id, installationId }),
+            context: JSON.stringify({ requestId: traceId, installationId }),
           });
         }
       } catch (error) {
