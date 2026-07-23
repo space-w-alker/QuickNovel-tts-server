@@ -59,7 +59,7 @@ The service also applies a global per-IP request limit, in addition to per-insta
 
 1. `POST /v1/installations` registers an anonymous pending app installation.
 2. `POST /v1/installations/token` refreshes its short-lived access token.
-3. `GET /v1/tts/catalog` returns the Standard, High and Ultra quality presets with one male and one female voice each.
+3. `GET /v1/tts/catalog` returns the Standard, High and Ultra quality presets with one male and one female voice each. The High preset maps to Speechify `simba-3.2`.
 4. `POST /v1/tts/chunks:resolve` accepts curated quality/gender or direct provider/model/voice and returns cached audio, a backend job, or a BYOK upload requirement.
 5. `POST /v1/tts/chunks/upload` publishes an authenticated BYOK MP3.
 6. `GET /v1/tts/jobs/:jobId` polls generation.

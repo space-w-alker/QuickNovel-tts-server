@@ -37,13 +37,13 @@ const DEFAULT_TTS_MODELS: TtsModelConfig[] = [
   {
     id: 'high',
     displayName: 'High',
-    provider: 'openrouter',
-    providerModel: 'x-ai/grok-voice-tts-1.0',
+    provider: 'speechify',
+    providerModel: 'simba-3.2',
     providerAudioFormat: 'mp3',
-    maxInputCharacters: 4000,
+    maxInputCharacters: 2000,
     voices: [
-      { id: 'male', displayName: 'Male', locale: 'en-US', providerVoice: 'rex' },
-      { id: 'female', displayName: 'Female', locale: 'en-US', providerVoice: 'ara' },
+      { id: 'male', displayName: 'Male', locale: 'en-US', providerVoice: 'dominic_32' },
+      { id: 'female', displayName: 'Female', locale: 'en-US', providerVoice: 'beatrice_32' },
     ],
   },
   {

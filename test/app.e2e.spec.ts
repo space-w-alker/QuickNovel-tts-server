@@ -87,10 +87,11 @@ describe('QuickNovel TTS API', () => {
     expect(catalog.json().models.map((model: { id: string }) => model.id)).toEqual(['standard', 'high', 'ultra']);
     expect(catalog.json().models[0].voices).toHaveLength(2);
     expect(app.get(CatalogService).resolve('high', 'female')).toMatchObject({
-      provider: 'openrouter',
-      model: 'x-ai/grok-voice-tts-1.0',
+      provider: 'speechify',
+      model: 'simba-3.2',
       providerAudioFormat: 'mp3',
-      voice: { providerVoice: 'ara' },
+      maxInputCharacters: 2000,
+      voice: { providerVoice: 'beatrice_32' },
     });
     expect(app.get(CatalogService).resolve('ultra', 'male')).toMatchObject({
       provider: 'openrouter',
