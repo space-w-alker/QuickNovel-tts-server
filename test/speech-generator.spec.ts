@@ -2,6 +2,7 @@ import { afterEach, vi } from 'vitest';
 import { AppConfig } from '../src/config/app-config';
 import { AudioTranscoder } from '../src/tts/audio-transcoder';
 import { OpenRouterSpeechGenerator, SpeechGenerator, SpeechifySpeechGenerator } from '../src/tts/speech-generator';
+import { SpeechifyRequestQueue } from '../src/tts/speechify-request-queue';
 
 describe('OpenRouterSpeechGenerator', () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -87,7 +88,25 @@ describe('OpenRouterSpeechGenerator', () => {
 });
 
 describe('SpeechifySpeechGenerator', () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function speechifyConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+    return {
+      speechifyApiKey: 'speechify-key',
+      speechifyBaseUrl: 'https://speechify.example',
+      speechifyRequestsPerSecond: 1,
+      speechifyMaxConcurrentRequests: 1,
+      maxAudioBytes: 1024,
+      ...overrides,
+    } as AppConfig;
+  }
+
+  function speechifyGenerator(config = speechifyConfig()): SpeechifySpeechGenerator {
+    return new SpeechifySpeechGenerator(config, new SpeechifyRequestQueue(config));
+  }
 
   it('requests and decodes Speechify MP3 audio', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
@@ -96,11 +115,7 @@ describe('SpeechifySpeechGenerator', () => {
       billable_characters_count: 6,
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     vi.stubGlobal('fetch', fetchMock);
-    const generator = new SpeechifySpeechGenerator({
-      speechifyApiKey: 'speechify-key',
-      speechifyBaseUrl: 'https://speechify.example',
-      maxAudioBytes: 1024,
-    } as AppConfig);
+    const generator = speechifyGenerator();
 
     const result = await generator.generate({
       provider: 'speechify', model: 'simba-3.0', voice: 'george', text: 'Hello.',
@@ -123,14 +138,74 @@ describe('SpeechifySpeechGenerator', () => {
       audio_data: 'not-base64!',
       audio_format: 'mp3',
     }), { status: 200 })));
-    const generator = new SpeechifySpeechGenerator({
-      speechifyApiKey: 'speechify-key',
-      speechifyBaseUrl: 'https://speechify.example',
-      maxAudioBytes: 1024,
-    } as AppConfig);
+    const generator = speechifyGenerator();
     await expect(generator.generate({
       provider: 'speechify', model: 'simba-3.0', voice: 'george', text: 'Hello.',
     })).rejects.toThrow('invalid base64');
+  });
+
+  it('queues request starts at the configured sustained rate', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
+      audio_data: Buffer.from('speechify-mp3').toString('base64'),
+      audio_format: 'mp3',
+    }), { status: 200 })));
+    vi.stubGlobal('fetch', fetchMock);
+    const generator = speechifyGenerator();
+    const request = {
+      provider: 'speechify' as const,
+      model: 'simba-3.2',
+      voice: 'geffen_32',
+      text: 'Hello.',
+    };
+
+    const generations = [
+      generator.generate(request),
+      generator.generate(request),
+      generator.generate(request),
+    ];
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await expect(Promise.all(generations)).resolves.toHaveLength(3);
+  });
+
+  it('does not exceed the configured request concurrency', async () => {
+    const responses: Array<(response: Response) => void> = [];
+    const fetchMock = vi.fn().mockImplementation(() => new Promise<Response>((resolve) => responses.push(resolve)));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = speechifyConfig({
+      speechifyRequestsPerSecond: 1000,
+      speechifyMaxConcurrentRequests: 1,
+    });
+    const generator = speechifyGenerator(config);
+    const request = {
+      provider: 'speechify' as const,
+      model: 'simba-3.2',
+      voice: 'geffen_32',
+      text: 'Hello.',
+    };
+
+    const first = generator.generate(request);
+    const second = generator.generate(request);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    responses.shift()?.(new Response(JSON.stringify({
+      audio_data: Buffer.from('first').toString('base64'),
+      audio_format: 'mp3',
+    }), { status: 200 }));
+    await expect(first).resolves.toMatchObject({ audio: Buffer.from('first') });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    responses.shift()?.(new Response(JSON.stringify({
+      audio_data: Buffer.from('second').toString('base64'),
+      audio_format: 'mp3',
+    }), { status: 200 }));
+    await expect(second).resolves.toMatchObject({ audio: Buffer.from('second') });
   });
 });
 

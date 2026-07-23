@@ -108,6 +108,8 @@ export class AppConfig {
   readonly openRouterAppTitle = process.env.OPENROUTER_APP_TITLE ?? 'QuickNovel';
   readonly speechifyApiKey = process.env.SPEECHIFY_API_KEY ?? '';
   readonly speechifyBaseUrl = (process.env.SPEECHIFY_BASE_URL ?? 'https://api.sws.speechify.com').replace(/\/$/, '');
+  readonly speechifyRequestsPerSecond = integer('SPEECHIFY_REQUESTS_PER_SECOND', 1);
+  readonly speechifyMaxConcurrentRequests = integer('SPEECHIFY_MAX_CONCURRENT_REQUESTS', 1);
   readonly maxChunkCharacters = integer('MAX_CHUNK_CHARACTERS', 4000);
   readonly maxAudioBytes = integer('MAX_AUDIO_BYTES', 50 * 1024 * 1024);
   readonly dailyCharacterQuota = integer('DAILY_CHARACTER_QUOTA', 100_000);

@@ -13,6 +13,7 @@ import { AudioTranscoder } from './tts/audio-transcoder';
 import { CatalogController } from './tts/catalog.controller';
 import { CatalogService } from './tts/catalog.service';
 import { OpenRouterSpeechGenerator, SpeechGenerator, SpeechifySpeechGenerator } from './tts/speech-generator';
+import { SpeechifyRequestQueue } from './tts/speechify-request-queue';
 import { TtsController } from './tts/tts.controller';
 import { TtsService } from './tts/tts.service';
 
@@ -30,6 +31,7 @@ import { TtsService } from './tts/tts.service';
     AudioTranscoder,
     TtsService,
     OpenRouterSpeechGenerator,
+    SpeechifyRequestQueue,
     SpeechifySpeechGenerator,
     SpeechGenerator,
   ],

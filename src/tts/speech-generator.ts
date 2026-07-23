@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { AppConfig, ProviderAudioFormat, TtsProvider } from '../config/app-config';
 import { AudioTranscoder } from './audio-transcoder';
+import { SpeechifyRequestQueue } from './speechify-request-queue';
 
 export interface SpeechGenerationRequest {
   provider: TtsProvider;
@@ -89,25 +90,31 @@ interface SpeechifyResponse {
 
 @Injectable()
 export class SpeechifySpeechGenerator implements ProviderSpeechGenerator {
-  constructor(private readonly config: AppConfig) {}
+  constructor(
+    private readonly config: AppConfig,
+    private readonly requestQueue: SpeechifyRequestQueue,
+  ) {}
 
   async generate(request: SpeechGenerationRequest): Promise<SpeechGenerationResult> {
     if (!this.config.speechifyApiKey) throw new Error('SPEECHIFY_API_KEY is not configured');
-    const response = await fetch(`${this.config.speechifyBaseUrl}/v1/audio/speech`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${this.config.speechifyApiKey}`,
-        'content-type': 'application/json',
-        accept: 'application/json',
+    const response = await this.requestQueue.run(() => fetch(
+      `${this.config.speechifyBaseUrl}/v1/audio/speech`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${this.config.speechifyApiKey}`,
+          'content-type': 'application/json',
+          accept: 'application/json',
+        },
+        body: JSON.stringify({
+          input: request.text,
+          voice_id: request.voice,
+          model: request.model,
+          audio_format: 'mp3',
+        }),
+        signal: AbortSignal.timeout(60_000),
       },
-      body: JSON.stringify({
-        input: request.text,
-        voice_id: request.voice,
-        model: request.model,
-        audio_format: 'mp3',
-      }),
-      signal: AbortSignal.timeout(60_000),
-    });
+    ));
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error(`Speechify returned ${response.status}`);

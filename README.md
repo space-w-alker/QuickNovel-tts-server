@@ -67,6 +67,8 @@ The service also applies a global per-IP request limit, in addition to per-insta
 
 The cache identity includes normalized text, provider, canonical model, canonical voice, and MP3 format. Curated aliases share audio with equivalent direct selections. Google PCM output is transcoded to MP3; Speechify base64 MP3 is decoded before storage. Playback speed is applied by Android. Cache hits and BYOK uploads do not consume backend quota.
 
+Speechify backend requests pass through an in-process queue. Its defaults match the [Build free-tier API limits](https://docs.speechify.ai/build/guides/concepts/api-limits): one request start per second and one request in flight. Set `SPEECHIFY_REQUESTS_PER_SECOND` and `SPEECHIFY_MAX_CONCURRENT_REQUESTS` to the limits of a paid plan when upgrading. These limits apply per Speechify account, so use a shared/distributed limiter instead if the server is deployed with multiple replicas.
+
 Schema version 1 intentionally replaces the legacy SQLite database and audio directory once. Existing clients re-register as pending and require admin approval for backend cache misses.
 
 See [.env.example](.env.example) for catalog, quota, and server configuration.
