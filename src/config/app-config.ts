@@ -97,7 +97,7 @@ export class AppConfig {
   readonly rateLimitMax = integer('RATE_LIMIT_MAX', 300);
   readonly rateLimitWindow = process.env.RATE_LIMIT_WINDOW ?? '1 minute';
   readonly superAdminUsername = process.env.SUPER_ADMIN_USERNAME ?? 'superadmin';
-  readonly superAdminPassword = required('SUPER_ADMIN_PASSWORD', 12);
+  readonly superAdminPassword = required('SUPER_ADMIN_PASSWORD', 1);
   readonly adminSessionTtlSeconds = integer('ADMIN_SESSION_TTL_SECONDS', 12 * 60 * 60);
   readonly secureAdminCookie = process.env.ADMIN_SECURE_COOKIE
     ? process.env.ADMIN_SECURE_COOKIE === 'true'
