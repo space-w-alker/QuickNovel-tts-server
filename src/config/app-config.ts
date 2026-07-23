@@ -9,13 +9,15 @@ export interface VoiceConfig {
 }
 
 export type ProviderAudioFormat = 'mp3' | 'pcm';
+export type TtsProvider = 'openrouter' | 'speechify';
 
 export interface TtsModelConfig {
   id: string;
   displayName: string;
-  openRouterModel: string;
-  cacheRevision: string;
+  provider: TtsProvider;
+  providerModel: string;
   providerAudioFormat: ProviderAudioFormat;
+  maxInputCharacters: number;
   voices: VoiceConfig[];
 }
 
@@ -23,9 +25,10 @@ const DEFAULT_TTS_MODELS: TtsModelConfig[] = [
   {
     id: 'standard',
     displayName: 'Standard',
-    openRouterModel: 'hexgrad/kokoro-82m',
-    cacheRevision: 'standard@1',
+    provider: 'openrouter',
+    providerModel: 'hexgrad/kokoro-82m',
     providerAudioFormat: 'mp3',
+    maxInputCharacters: 4000,
     voices: [
       { id: 'male', displayName: 'Male', locale: 'en-US', providerVoice: 'am_echo' },
       { id: 'female', displayName: 'Female', locale: 'en-US', providerVoice: 'af_heart' },
@@ -34,9 +37,10 @@ const DEFAULT_TTS_MODELS: TtsModelConfig[] = [
   {
     id: 'high',
     displayName: 'High',
-    openRouterModel: 'x-ai/grok-voice-tts-1.0',
-    cacheRevision: 'high@1',
+    provider: 'openrouter',
+    providerModel: 'x-ai/grok-voice-tts-1.0',
     providerAudioFormat: 'mp3',
+    maxInputCharacters: 4000,
     voices: [
       { id: 'male', displayName: 'Male', locale: 'en-US', providerVoice: 'rex' },
       { id: 'female', displayName: 'Female', locale: 'en-US', providerVoice: 'ara' },
@@ -45,9 +49,10 @@ const DEFAULT_TTS_MODELS: TtsModelConfig[] = [
   {
     id: 'ultra',
     displayName: 'Ultra',
-    openRouterModel: 'google/gemini-3.1-flash-tts-preview',
-    cacheRevision: 'ultra@1',
+    provider: 'openrouter',
+    providerModel: 'google/gemini-3.1-flash-tts-preview',
     providerAudioFormat: 'pcm',
+    maxInputCharacters: 4000,
     voices: [
       { id: 'male', displayName: 'Male', locale: 'en-US', providerVoice: 'Puck' },
       { id: 'female', displayName: 'Female', locale: 'en-US', providerVoice: 'Zephyr' },
@@ -101,6 +106,8 @@ export class AppConfig {
   readonly openRouterBaseUrl = (process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1').replace(/\/$/, '');
   readonly openRouterHttpReferer = process.env.OPENROUTER_HTTP_REFERER;
   readonly openRouterAppTitle = process.env.OPENROUTER_APP_TITLE ?? 'QuickNovel';
+  readonly speechifyApiKey = process.env.SPEECHIFY_API_KEY ?? '';
+  readonly speechifyBaseUrl = (process.env.SPEECHIFY_BASE_URL ?? 'https://api.sws.speechify.com').replace(/\/$/, '');
   readonly maxChunkCharacters = integer('MAX_CHUNK_CHARACTERS', 4000);
   readonly maxAudioBytes = integer('MAX_AUDIO_BYTES', 50 * 1024 * 1024);
   readonly dailyCharacterQuota = integer('DAILY_CHARACTER_QUOTA', 100_000);
@@ -120,9 +127,15 @@ export class AppConfig {
   private parseModel(candidate: unknown, index: number): TtsModelConfig {
     if (!candidate || typeof candidate !== 'object') throw new Error(`Invalid TTS model at index ${index}`);
     const model = candidate as Partial<TtsModelConfig>;
-    const required = [model.id, model.displayName, model.openRouterModel, model.cacheRevision];
+    const legacy = model as Partial<TtsModelConfig> & { openRouterModel?: string };
+    const provider = model.provider ?? 'openrouter';
+    const providerModel = model.providerModel ?? legacy.openRouterModel;
+    const required = [model.id, model.displayName, providerModel];
     if (required.some((field) => typeof field !== 'string' || field.trim().length === 0)) {
       throw new Error(`Invalid TTS model at index ${index}`);
+    }
+    if (provider !== 'openrouter' && provider !== 'speechify') {
+      throw new Error(`Invalid provider for TTS model ${model.id}`);
     }
     if (model.providerAudioFormat !== 'mp3' && model.providerAudioFormat !== 'pcm') {
       throw new Error(`Invalid provider audio format for TTS model ${model.id}`);
@@ -141,6 +154,26 @@ export class AppConfig {
     if (new Set(voices.map((voice) => voice.id)).size !== voices.length) {
       throw new Error(`TTS model ${model.id} contains duplicate voice IDs`);
     }
-    return { ...model, voices } as TtsModelConfig;
+    const configuredMaximum = model.maxInputCharacters
+      ?? (provider === 'speechify' ? 2000 : this.maxChunkCharacters);
+    if (!Number.isSafeInteger(configuredMaximum) || configuredMaximum <= 0) {
+      throw new Error(`Invalid maximum input characters for TTS model ${model.id}`);
+    }
+    const maxInputCharacters = provider === 'speechify'
+      ? Math.min(2000, configuredMaximum)
+      : configuredMaximum;
+    return {
+      id: model.id!,
+      displayName: model.displayName!,
+      provider,
+      providerModel: providerModel!,
+      providerAudioFormat: model.providerAudioFormat,
+      maxInputCharacters,
+      voices,
+    };
+  }
+
+  providerMaxInputCharacters(provider: TtsProvider): number {
+    return provider === 'speechify' ? Math.min(2000, this.maxChunkCharacters) : this.maxChunkCharacters;
   }
 }

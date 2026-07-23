@@ -52,6 +52,7 @@ export class InstallationsController {
     return {
       access_token: access.token,
       access_token_expires_at: access.expiresAt,
+      backend_generation_status: this.state.getInstallationStatus(installationId),
       ...(refreshToken ? { refresh_token: refreshToken } : {}),
       quota: {
         characters_remaining: quota.charactersRemaining,

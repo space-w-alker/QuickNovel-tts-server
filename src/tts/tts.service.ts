@@ -4,6 +4,7 @@ import { ApiException } from '../common/api-error';
 import { QuotaExceededError, SqliteStateStore } from '../state/sqlite-state.store';
 import { AudioRecord, QuotaSnapshot } from '../state/state.types';
 import { AudioStorageService } from './audio-storage.service';
+import { AudioTranscoder } from './audio-transcoder';
 import { audioCacheKey, CHUNKER_VERSION, normalizeText, prepareSpeechText, textHash } from './cache-key';
 import { CatalogService, ResolvedCatalogSelection } from './catalog.service';
 import { ResolveChunkDto } from './dto';
@@ -25,20 +26,14 @@ export class TtsService implements BeforeApplicationShutdown {
     private readonly state: SqliteStateStore,
     private readonly storage: AudioStorageService,
     private readonly generator: SpeechGenerator,
+    private readonly transcoder: AudioTranscoder,
   ) {}
 
   resolve(installationId: string, dto: ResolveChunkDto): TtsHttpResult {
-    if (dto.chunker_version !== CHUNKER_VERSION) {
+    if (![1, CHUNKER_VERSION].includes(dto.chunker_version)) {
       throw new ApiException(HttpStatus.BAD_REQUEST, 'invalid_chunker_version', 'This chunker version is not supported.');
     }
-    const selection = this.catalog.resolve(dto.model_id, dto.voice_id);
-    if (!selection) {
-      throw new ApiException(
-        HttpStatus.BAD_REQUEST,
-        'catalog_entry_unavailable',
-        'The requested model and voice combination is unavailable.',
-      );
-    }
+    const selection = this.selection(dto);
     const speechText = prepareSpeechText(dto.text);
     const normalizedText = normalizeText(speechText);
     const inputCharacters = [...speechText].length;
@@ -46,16 +41,65 @@ export class TtsService implements BeforeApplicationShutdown {
       throw new ApiException(HttpStatus.BAD_REQUEST, 'invalid_text', 'Text must contain a speakable character.');
     }
     const settings = this.state.getOperationalSettings();
-    if (inputCharacters > settings.maxChunkCharacters) {
+    const maximumCharacters = Math.min(settings.maxChunkCharacters, selection.maxInputCharacters);
+    if (inputCharacters > maximumCharacters) {
       throw new ApiException(
         HttpStatus.PAYLOAD_TOO_LARGE,
-        'text_too_large',
-        `Text cannot exceed ${settings.maxChunkCharacters} characters.`,
+        'text_too_large_for_provider',
+        `Text cannot exceed ${maximumCharacters} characters for ${selection.provider}.`,
       );
     }
 
-    const cacheKey = audioCacheKey(normalizedText, selection.cacheRevision, selection.voice.id);
+    const cacheKey = audioCacheKey(normalizedText, selection.provider, selection.model, selection.voice.providerVoice);
     const existing = this.state.getAudio(cacheKey);
+    if (existing && existing.status !== 'failed') {
+      const claim = this.state.claimAudio(installationId, {
+        cacheKey,
+        providerId: selection.provider,
+        generationSource: existing.generationSource,
+        modelId: selection.model,
+        modelCacheRevision: `${selection.provider}:${selection.model}`,
+        voiceId: selection.voice.providerVoice,
+        textHash: textHash(normalizedText),
+        inputCharacters,
+      });
+      return this.response(claim.record, claim.quota, true);
+    }
+    if (dto.generation_source === 'byok') {
+      return {
+        status: HttpStatus.OK,
+        body: {
+          state: 'upload_required',
+          cache_key: cacheKey,
+          selection: {
+            provider: selection.provider,
+            model: selection.model,
+            voice: selection.voice.providerVoice,
+          },
+        },
+      };
+    }
+    const approval = this.state.getInstallationStatus(installationId);
+    if (approval !== 'approved') {
+      throw new ApiException(
+        HttpStatus.FORBIDDEN,
+        approval === 'suspended' ? 'backend_generation_suspended' : 'backend_generation_approval_required',
+        approval === 'suspended'
+          ? 'Backend speech generation is suspended for this installation.'
+          : 'An administrator must approve this installation before backend speech generation.',
+      );
+    }
+    if (
+      (selection.provider === 'openrouter' && !this.config.openRouterApiKey)
+      || (selection.provider === 'speechify' && !this.config.speechifyApiKey)
+    ) {
+      throw new ApiException(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        'provider_not_configured',
+        `${selection.provider} backend generation is not configured.`,
+        true,
+      );
+    }
     if (!settings.generationEnabled && (!existing || existing.status === 'failed')) {
       throw new ApiException(
         HttpStatus.SERVICE_UNAVAILABLE,
@@ -68,9 +112,11 @@ export class TtsService implements BeforeApplicationShutdown {
     try {
       claim = this.state.claimAudio(installationId, {
         cacheKey,
-        modelId: selection.publicModelId,
-        modelCacheRevision: selection.cacheRevision,
-        voiceId: selection.voice.id,
+        providerId: selection.provider,
+        generationSource: 'backend',
+        modelId: selection.model,
+        modelCacheRevision: `${selection.provider}:${selection.model}`,
+        voiceId: selection.voice.providerVoice,
         textHash: textHash(normalizedText),
         inputCharacters,
       });
@@ -125,7 +171,8 @@ export class TtsService implements BeforeApplicationShutdown {
   private async generate(cacheKey: string, text: string, selection: ResolvedCatalogSelection): Promise<void> {
     try {
       const result = await this.generator.generate({
-        model: selection.openRouterModel,
+        provider: selection.provider,
+        model: selection.model,
         voice: selection.voice.providerVoice,
         text,
         responseFormat: selection.providerAudioFormat,
@@ -198,6 +245,103 @@ export class TtsService implements BeforeApplicationShutdown {
 
   private observableGenerationError(message: string): string {
     if (message.startsWith('OpenRouter returned ')) return message.split(':', 1)[0] ?? 'OpenRouter request failed';
+    if (message.startsWith('Speechify returned ')) return message.split(':', 1)[0] ?? 'Speechify request failed';
     return message.slice(0, 200);
+  }
+
+  async upload(installationId: string, dto: ResolveChunkDto, audio: Buffer): Promise<TtsHttpResult> {
+    if (![1, CHUNKER_VERSION].includes(dto.chunker_version)) {
+      throw new ApiException(HttpStatus.BAD_REQUEST, 'invalid_chunker_version', 'This chunker version is not supported.');
+    }
+    if (typeof dto.text !== 'string') {
+      throw new ApiException(HttpStatus.BAD_REQUEST, 'invalid_upload_metadata', 'Upload text must be a string.');
+    }
+    const selection = this.selection(dto);
+    const speechText = prepareSpeechText(dto.text);
+    const normalizedText = normalizeText(speechText);
+    const inputCharacters = [...speechText].length;
+    const maximumCharacters = Math.min(
+      this.state.getOperationalSettings().maxChunkCharacters,
+      selection.maxInputCharacters,
+    );
+    if (!normalizedText || inputCharacters > maximumCharacters) {
+      throw new ApiException(
+        inputCharacters > maximumCharacters ? HttpStatus.PAYLOAD_TOO_LARGE : HttpStatus.BAD_REQUEST,
+        inputCharacters > maximumCharacters ? 'text_too_large_for_provider' : 'invalid_text',
+        inputCharacters > maximumCharacters
+          ? `Text cannot exceed ${maximumCharacters} characters for ${selection.provider}.`
+          : 'Text must contain a speakable character.',
+      );
+    }
+    if (!audio.length || audio.length > this.config.maxAudioBytes) {
+      throw new ApiException(HttpStatus.PAYLOAD_TOO_LARGE, 'invalid_audio_upload', 'Uploaded MP3 is empty or too large.');
+    }
+    try {
+      await this.transcoder.validateMp3(audio);
+    } catch {
+      throw new ApiException(HttpStatus.BAD_REQUEST, 'invalid_audio_upload', 'Uploaded audio is not a valid MP3.');
+    }
+    const cacheKey = audioCacheKey(normalizedText, selection.provider, selection.model, selection.voice.providerVoice);
+    const existing = this.state.getAudio(cacheKey);
+    if (existing && existing.status !== 'failed') {
+      return this.response(existing, this.state.getQuota(installationId), true);
+    }
+    if (existing?.status === 'failed') {
+      this.state.deleteAudio(cacheKey);
+      await this.storage.remove(cacheKey);
+    }
+    const saved = await this.storage.saveIfAbsent(cacheKey, audio);
+    const registered = this.state.registerUploadedAudio(installationId, {
+      cacheKey,
+      providerId: selection.provider,
+      generationSource: 'byok',
+      modelId: selection.model,
+      modelCacheRevision: `${selection.provider}:${selection.model}`,
+      voiceId: selection.voice.providerVoice,
+      textHash: textHash(normalizedText),
+      inputCharacters,
+    }, saved.bytes);
+    return this.response(registered.record, this.state.getQuota(installationId), !registered.inserted);
+  }
+
+  private selection(dto: ResolveChunkDto): ResolvedCatalogSelection {
+    const presetPair = Boolean(dto.quality || dto.gender);
+    const directPair = Boolean(dto.provider || dto.model || dto.voice);
+    const legacyPair = Boolean(dto.model_id || dto.voice_id);
+    if ([presetPair, directPair, legacyPair].filter(Boolean).length !== 1) {
+      throw new ApiException(
+        HttpStatus.BAD_REQUEST,
+        'invalid_tts_selection',
+        'Send exactly one complete quality/gender or provider/model/voice selection.',
+      );
+    }
+    if (directPair) {
+      const provider = dto.provider;
+      const model = typeof dto.model === 'string' ? dto.model.trim() : '';
+      const voice = typeof dto.voice === 'string' ? dto.voice.trim() : '';
+      if (
+        (provider !== 'openrouter' && provider !== 'speechify')
+        || !model || !voice || model.length > 200 || voice.length > 200
+      ) {
+        throw new ApiException(HttpStatus.BAD_REQUEST, 'invalid_tts_selection', 'Provider, model and voice are required.');
+      }
+      return this.catalog.resolveDirect(provider, model, voice);
+    }
+    const rawQuality = dto.quality ?? dto.model_id;
+    const rawGender = dto.gender ?? dto.voice_id;
+    const quality = typeof rawQuality === 'string' ? rawQuality.trim() : '';
+    const gender = typeof rawGender === 'string' ? rawGender.trim() : '';
+    if (!quality || !gender || quality.length > 100 || gender.length > 100) {
+      throw new ApiException(HttpStatus.BAD_REQUEST, 'invalid_tts_selection', 'Quality and gender are required.');
+    }
+    const selection = this.catalog.resolve(quality, gender);
+    if (!selection) {
+      throw new ApiException(
+        HttpStatus.BAD_REQUEST,
+        'catalog_entry_unavailable',
+        'The requested quality and gender combination is unavailable.',
+      );
+    }
+    return selection;
   }
 }

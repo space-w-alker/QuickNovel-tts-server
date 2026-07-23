@@ -285,6 +285,32 @@ export class AdminController {
     void reply.status(302).redirect('/admin/installations?notice=usage-reset');
   }
 
+  @Post('installations/:id/approve')
+  approveInstallation(
+    @Param('id') id: string, @Body() body: FormBody, @Req() request: CookieRequest, @Res() reply: FastifyReply,
+  ): void {
+    const session = this.requirePostSession(request, reply, body);
+    if (!session) return;
+    const previous = this.state.setInstallationStatus(id, 'approved');
+    this.audit(session, 'installation_approved', 'Installation backend generation was approved.', {
+      id, previous, next: previous ? 'approved' : undefined,
+    });
+    void reply.status(302).redirect('/admin/installations?notice=installation-approved');
+  }
+
+  @Post('installations/:id/suspend')
+  suspendInstallation(
+    @Param('id') id: string, @Body() body: FormBody, @Req() request: CookieRequest, @Res() reply: FastifyReply,
+  ): void {
+    const session = this.requirePostSession(request, reply, body);
+    if (!session) return;
+    const previous = this.state.setInstallationStatus(id, 'suspended');
+    this.audit(session, 'installation_suspended', 'Installation backend generation was suspended.', {
+      id, previous, next: previous ? 'suspended' : undefined,
+    });
+    void reply.status(302).redirect('/admin/installations?notice=installation-suspended');
+  }
+
   @Post('installations/:id/revoke')
   revokeInstallation(
     @Param('id') id: string, @Body() body: FormBody, @Req() request: CookieRequest, @Res() reply: FastifyReply,
@@ -398,6 +424,8 @@ export class AdminController {
       'failed-cleared': 'Failed audio records cleared; clients can request those chunks again.',
       'audio-deleted': 'The cached audio file and metadata were deleted. Its request history was preserved.',
       'usage-reset': "Today's usage was reset for the installation.",
+      'installation-approved': 'Backend generation was approved for the installation.',
+      'installation-suspended': 'Backend generation was suspended for the installation.',
       'installation-revoked': 'Installation credentials were revoked.',
       'logs-pruned': 'Logs older than the retention window were pruned.',
     };

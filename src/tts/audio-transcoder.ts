@@ -3,6 +3,39 @@ import { spawn } from 'node:child_process';
 
 @Injectable()
 export class AudioTranscoder {
+  validateMp3(audio: Buffer): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const process = spawn(
+        'ffmpeg',
+        ['-hide_banner', '-loglevel', 'error', '-f', 'mp3', '-i', 'pipe:0', '-f', 'null', '-'],
+        { stdio: ['pipe', 'ignore', 'pipe'] },
+      );
+      const errors: Buffer[] = [];
+      let settled = false;
+      const timeout = setTimeout(() => {
+        process.kill('SIGKILL');
+        finish(new Error('MP3 validation timed out'));
+      }, 30_000);
+      const finish = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (error) reject(error);
+        else resolve();
+      };
+      process.stderr.on('data', (chunk: Buffer) => errors.push(chunk));
+      process.on('error', (error) => finish(new Error(`Unable to start ffmpeg: ${error.message}`)));
+      process.on('close', (code) => {
+        if (code === 0) finish();
+        else finish(new Error(`Invalid MP3 audio: ${Buffer.concat(errors).toString('utf8').slice(0, 200)}`));
+      });
+      process.stdin.on('error', (error) => {
+        if ((error as NodeJS.ErrnoException).code !== 'EPIPE') finish(error);
+      });
+      process.stdin.end(audio);
+    });
+  }
+
   pcmToMp3(pcm: Buffer, maxOutputBytes: number): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const process = spawn(

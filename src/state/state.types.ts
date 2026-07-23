@@ -2,7 +2,12 @@ export interface InstallationRecord {
   id: string;
   refreshTokenHash: string;
   createdAt: string;
+  backendGenerationStatus: InstallationStatus;
+  statusUpdatedAt: string;
 }
+
+export type InstallationStatus = 'pending' | 'approved' | 'suspended';
+export type GenerationSource = 'backend' | 'byok';
 
 export interface DailyUsageRecord {
   characters: number;
@@ -15,6 +20,8 @@ export interface AudioRecord {
   cacheKey: string;
   jobId: string;
   status: AudioStatus;
+  providerId: 'openrouter' | 'speechify';
+  generationSource: GenerationSource;
   modelId: string;
   modelCacheRevision: string;
   voiceId: string;
@@ -89,8 +96,10 @@ export interface GenerationRequestRecord {
   cacheKey: string;
   jobId: string;
   cacheHit: boolean;
+  generationSource: GenerationSource;
   createdAt: string;
   audioStatus?: AudioStatus;
+  providerId?: 'openrouter' | 'speechify';
   voiceId?: string;
   modelId?: string;
   inputCharacters?: number;

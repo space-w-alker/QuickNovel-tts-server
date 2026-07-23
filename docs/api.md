@@ -26,7 +26,7 @@ All errors have this shape:
 }
 ```
 
-Returns `201` with a short-lived `access_token`, its `access_token_expires_at`, a long-lived `refresh_token`, and the current quota. Registration is rejected with `409 installation_exists` if the UUID already exists.
+Returns `201` with tokens, quota, and `backend_generation_status`. New installations are `pending`; an admin must approve them before they can start server-funded generation.
 
 ## Refresh an access token
 
@@ -51,32 +51,51 @@ Returns `200` with a new access token and current quota. The refresh token is no
   "models": [
     {
       "id": "standard",
+      "quality": "standard",
       "display_name": "Standard",
-      "cache_revision": "standard@1",
+      "provider": "openrouter",
+      "model": "hexgrad/kokoro-82m",
       "output_format": "mp3",
       "voices": [
-        { "id": "male", "display_name": "Male", "locale": "en-US" },
-        { "id": "female", "display_name": "Female", "locale": "en-US" }
+        { "id": "male", "gender": "male", "display_name": "Male", "voice": "am_echo", "locale": "en-US" }
       ]
     }
   ]
 }
 ```
 
-The response contains the same two voices for the `high` and `ultra` models. Only model/voice combinations in this response can be resolved. Provider identities and native output formats are intentionally hidden; every public preset produces MP3.
+The response also includes provider capabilities. Presets may map to either OpenRouter or Speechify, and every stored asset is MP3.
 
 ## Resolve a speech chunk
 
 `POST /v1/tts/chunks:resolve`
 
+Curated:
+
 ```json
 {
-  "model_id": "standard",
-  "voice_id": "male",
+  "quality": "standard",
+  "gender": "male",
+  "generation_source": "backend",
   "text": "The exact sentence to speak.",
-  "chunker_version": 1
+  "chunker_version": 2
 }
 ```
+
+Direct:
+
+```json
+{
+  "provider": "speechify",
+  "model": "simba-3.0",
+  "voice": "george",
+  "generation_source": "byok",
+  "text": "The exact sentence to speak.",
+  "chunker_version": 2
+}
+```
+
+Exactly one selection form is required. Pending and suspended installations retain cache and BYOK access.
 
 On a cache miss, returns `202`:
 
@@ -110,7 +129,9 @@ On a cache hit, returns `200`:
 }
 ```
 
-The server normalizes Unicode and line endings, then derives the cache identity from text, model cache revision, voice, and MP3 format. Playback speed is not accepted and cannot affect cache identity. Only a newly claimed generation consumes daily quota; cache hits and job polling do not.
+The server derives cache identity from normalized text, provider, canonical model, canonical voice, and MP3 format. Only a newly claimed backend generation consumes quota.
+
+For a BYOK miss the response state is `upload_required`. Generate the MP3 on-device and send `metadata` JSON plus the `audio` MP3 as multipart form data to `POST /v1/tts/chunks/upload`. The server validates and publishes the first valid upload.
 
 ## Poll a generation job
 

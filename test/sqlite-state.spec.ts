@@ -1,9 +1,11 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AppConfig } from '../src/config/app-config';
 import { QuotaExceededError, SqliteStateStore } from '../src/state/sqlite-state.store';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import Database = require('better-sqlite3');
 
 describe('SqliteStateStore', () => {
   let directory: string;
@@ -42,6 +44,19 @@ describe('SqliteStateStore', () => {
     expect(second.record.jobId).toBe(first.record.jobId);
     expect(store.getQuota(installationId).charactersRemaining).toBe(0);
     expect(store.getQuota(installationId).requestsRemaining).toBe(0);
+  });
+
+  it('registers pending installations and supports approval and suspension', () => {
+    const installationId = randomUUID();
+    expect(store.registerInstallation(installationId).status).toBe('pending');
+    expect(store.getInstallationStatus(installationId)).toBe('pending');
+    expect(store.setInstallationStatus(installationId, 'approved')).toBe('pending');
+    expect(store.getInstallationStatus(installationId)).toBe('approved');
+    expect(store.setInstallationStatus(installationId, 'suspended')).toBe('approved');
+    expect(store.listInstallations()[0]).toMatchObject({
+      id: installationId,
+      backendGenerationStatus: 'suspended',
+    });
   });
 
   it('rejects a new generation after quota is exhausted', () => {
@@ -132,5 +147,29 @@ describe('SqliteStateStore', () => {
       second.cacheKey,
       first.cacheKey,
     ]);
+  });
+
+  it('replaces the legacy database and audio directory exactly once', async () => {
+    store.onApplicationShutdown();
+    const databasePath = join(directory, 'quicknovel-tts.sqlite');
+    await rm(databasePath, { force: true });
+    const legacy = new Database(databasePath);
+    legacy.exec('CREATE TABLE installations (id TEXT PRIMARY KEY); PRAGMA user_version = 0;');
+    legacy.close();
+    const audioDirectory = join(directory, 'audio', 'aa');
+    await mkdir(audioDirectory, { recursive: true });
+    await writeFile(join(audioDirectory, 'legacy.mp3'), 'legacy');
+
+    store = new SqliteStateStore({
+      dataDir: directory,
+      dailyCharacterQuota: 5,
+      dailyGenerationQuota: 1,
+    } as AppConfig);
+    store.onModuleInit();
+
+    expect(store.listInstallations()).toEqual([]);
+    const current = new Database(databasePath, { readonly: true });
+    expect(current.pragma('user_version', { simple: true })).toBe(1);
+    current.close();
   });
 });

@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import cookie from '@fastify/cookie';
+import multipart from '@fastify/multipart';
 import { ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -10,6 +11,8 @@ import { join } from 'node:path';
 import { AppModule } from '../src/app.module';
 import { ApiExceptionFilter } from '../src/common/api-error';
 import { CatalogService } from '../src/tts/catalog.service';
+import { SqliteStateStore } from '../src/state/sqlite-state.store';
+import { AudioTranscoder } from '../src/tts/audio-transcoder';
 import { SpeechGenerationRequest, SpeechGenerationResult, SpeechGenerator } from '../src/tts/speech-generator';
 
 class FakeSpeechGenerator extends SpeechGenerator {
@@ -38,6 +41,7 @@ describe('QuickNovel TTS API', () => {
       SUPER_ADMIN_USERNAME: 'superadmin',
       SUPER_ADMIN_PASSWORD: 'test-admin-password-12345',
       ADMIN_SECURE_COOKIE: 'false',
+      OPENROUTER_API_KEY: 'test-openrouter-key',
       DAILY_CHARACTER_QUOTA: '100000',
       DAILY_GENERATION_QUOTA: '1000',
     });
@@ -48,17 +52,20 @@ describe('QuickNovel TTS API', () => {
       .compile();
     app = module.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
     await app.register(cookie);
+    await app.register(multipart);
     app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
     app.useGlobalFilters(new ApiExceptionFilter());
     await app.init();
     await app.getHttpAdapter().getInstance().ready();
 
+    const installationId = randomUUID();
     const registration = await app.inject({
       method: 'POST',
       url: '/v1/installations',
-      payload: { installation_id: randomUUID(), app_version: '1.0.0', platform: 'android' },
+      payload: { installation_id: installationId, app_version: '1.0.0', platform: 'android' },
     });
     expect(registration.statusCode).toBe(201);
+    app.get(SqliteStateStore).setInstallationStatus(installationId, 'approved');
     token = registration.json().access_token as string;
   });
 
@@ -80,12 +87,14 @@ describe('QuickNovel TTS API', () => {
     expect(catalog.json().models.map((model: { id: string }) => model.id)).toEqual(['standard', 'high', 'ultra']);
     expect(catalog.json().models[0].voices).toHaveLength(2);
     expect(app.get(CatalogService).resolve('high', 'female')).toMatchObject({
-      openRouterModel: 'x-ai/grok-voice-tts-1.0',
+      provider: 'openrouter',
+      model: 'x-ai/grok-voice-tts-1.0',
       providerAudioFormat: 'mp3',
       voice: { providerVoice: 'ara' },
     });
     expect(app.get(CatalogService).resolve('ultra', 'male')).toMatchObject({
-      openRouterModel: 'google/gemini-3.1-flash-tts-preview',
+      provider: 'openrouter',
+      model: 'google/gemini-3.1-flash-tts-preview',
       providerAudioFormat: 'pcm',
       voice: { providerVoice: 'Puck' },
     });
@@ -96,7 +105,7 @@ describe('QuickNovel TTS API', () => {
       model_id: 'standard',
       voice_id: 'male',
       text: 'A reusable sentence.',
-      chunker_version: 1,
+      chunker_version: 2,
     };
     const first = await resolve(payload);
     expect(first.statusCode).toBe(202);
@@ -124,6 +133,7 @@ describe('QuickNovel TTS API', () => {
     const calls = generator.calls.filter((call) => call.text === payload.text);
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
+      provider: 'openrouter',
       model: 'hexgrad/kokoro-82m',
       voice: 'am_echo',
       responseFormat: 'mp3',
@@ -141,7 +151,7 @@ describe('QuickNovel TTS API', () => {
       model_id: 'standard',
       voice_id: 'female',
       text: 'A concurrent sentence.',
-      chunker_version: 1,
+      chunker_version: 2,
     };
     const [first, second] = await Promise.all([resolve(payload), resolve(payload)]);
     expect(first.statusCode).toBe(202);
@@ -161,7 +171,7 @@ describe('QuickNovel TTS API', () => {
       model_id: 'unknown',
       voice_id: 'male',
       text: 'Hello.',
-      chunker_version: 1,
+      chunker_version: 2,
     });
     expect(unavailable.statusCode).toBe(400);
     expect(unavailable.json().error.code).toBe('catalog_entry_unavailable');
@@ -169,6 +179,90 @@ describe('QuickNovel TTS API', () => {
     const malformed = await resolve({ model_id: 'standard' });
     expect(malformed.statusCode).toBe(400);
     expect(malformed.json().error.code).toBe('validation_failed');
+  });
+
+  it('keeps pending installations on cache and BYOK while blocking backend misses', async () => {
+    const registration = await app.inject({
+      method: 'POST',
+      url: '/v1/installations',
+      payload: { installation_id: randomUUID(), app_version: '1.0.0', platform: 'android' },
+    });
+    expect(registration.statusCode).toBe(201);
+    expect(registration.json().backend_generation_status).toBe('pending');
+    const pendingToken = registration.json().access_token as string;
+    const pendingResolve = (payload: Record<string, unknown>) => app.inject({
+      method: 'POST',
+      url: '/v1/tts/chunks:resolve',
+      headers: { authorization: `Bearer ${pendingToken}` },
+      payload,
+    });
+    const cached = await pendingResolve({
+      quality: 'standard', gender: 'male', text: 'A reusable sentence.', chunker_version: 2,
+    });
+    expect(cached.statusCode).toBe(200);
+    const blocked = await pendingResolve({
+      quality: 'standard', gender: 'male', text: 'Pending backend miss.', chunker_version: 2,
+    });
+    expect(blocked.statusCode).toBe(403);
+    expect(blocked.json().error.code).toBe('backend_generation_approval_required');
+    const byok = await pendingResolve({
+      provider: 'speechify',
+      model: 'simba-3.0',
+      voice: 'george',
+      generation_source: 'byok',
+      text: 'Pending BYOK miss.',
+      chunker_version: 2,
+    });
+    expect(byok.statusCode).toBe(200);
+    expect(byok.json()).toMatchObject({
+      state: 'upload_required',
+      selection: { provider: 'speechify', model: 'simba-3.0', voice: 'george' },
+    });
+  });
+
+  it('accepts a pending Speechify BYOK upload and shares it with other installations', async () => {
+    const registration = await app.inject({
+      method: 'POST',
+      url: '/v1/installations',
+      payload: { installation_id: randomUUID(), app_version: '1.0.0', platform: 'android' },
+    });
+    const pendingToken = registration.json().access_token as string;
+    const metadata = {
+      provider: 'speechify',
+      model: 'simba-3.0',
+      voice: 'george',
+      generation_source: 'byok',
+      text: 'Shared Speechify upload.',
+      chunker_version: 2,
+    };
+    const mp3 = await app.get(AudioTranscoder).pcmToMp3(Buffer.alloc(24_000), 1024 * 1024);
+    const boundary = 'quicknovel-test-boundary';
+    const payload = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="metadata"\r\n\r\n`
+        + `${JSON.stringify(metadata)}\r\n`
+        + `--${boundary}\r\nContent-Disposition: form-data; name="audio"; filename="speech.mp3"\r\n`
+        + 'Content-Type: audio/mpeg\r\n\r\n',
+      ),
+      mp3,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const uploaded = await app.inject({
+      method: 'POST',
+      url: '/v1/tts/chunks/upload',
+      headers: {
+        authorization: `Bearer ${pendingToken}`,
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+      },
+      payload,
+    });
+    expect(uploaded.statusCode).toBe(200);
+    expect(uploaded.json()).toMatchObject({ state: 'ready', cache_hit: false });
+
+    const shared = await resolve(metadata);
+    expect(shared.statusCode).toBe(200);
+    expect(shared.json().cache_key).toBe(uploaded.json().cache_key);
+    expect(shared.json().cache_hit).toBe(true);
   });
 
   it('authenticates the admin console and applies audited runtime controls', async () => {
@@ -204,6 +298,27 @@ describe('QuickNovel TTS API', () => {
     const csrfToken = settingsPage.body.match(/name="csrf_token" value="([^"]+)"/)?.[1];
     expect(csrfToken).toBeTruthy();
 
+    const pendingInstallation = app.get(SqliteStateStore)
+      .listInstallations()
+      .find((installation) => installation.backendGenerationStatus === 'pending');
+    expect(pendingInstallation).toBeTruthy();
+    const approve = await app.inject({
+      method: 'POST',
+      url: `/admin/installations/${pendingInstallation?.id}/approve`,
+      headers: { cookie: sessionCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ csrf_token: csrfToken ?? '' }).toString(),
+    });
+    expect(approve.statusCode).toBe(302);
+    expect(app.get(SqliteStateStore).getInstallationStatus(pendingInstallation?.id ?? '')).toBe('approved');
+    const suspend = await app.inject({
+      method: 'POST',
+      url: `/admin/installations/${pendingInstallation?.id}/suspend`,
+      headers: { cookie: sessionCookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: new URLSearchParams({ csrf_token: csrfToken ?? '' }).toString(),
+    });
+    expect(suspend.statusCode).toBe(302);
+    expect(app.get(SqliteStateStore).getInstallationStatus(pendingInstallation?.id ?? '')).toBe('suspended');
+
     const pause = await app.inject({
       method: 'POST',
       url: '/admin/settings',
@@ -222,7 +337,7 @@ describe('QuickNovel TTS API', () => {
       model_id: 'standard',
       voice_id: 'male',
       text: 'This uncached request should be paused.',
-      chunker_version: 1,
+      chunker_version: 2,
     });
     expect(pausedGeneration.statusCode).toBe(503);
     expect(pausedGeneration.json().error.code).toBe('generation_paused');

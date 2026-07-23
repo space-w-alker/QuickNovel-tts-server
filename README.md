@@ -1,13 +1,13 @@
 # QuickNovel TTS Server
 
-NestJS/Fastify service that generates speech through OpenRouter and permanently reuses identical audio across QuickNovel installations. Metadata and quota accounting are stored in SQLite; MP3 files are stored on the server's local filesystem.
+NestJS/Fastify service that generates speech through OpenRouter or Speechify and permanently reuses identical audio across QuickNovel installations. Metadata and quota accounting are stored in SQLite; MP3 files are stored on the server's local filesystem.
 
 ## Requirements
 
 - Node.js 22+
 - FFmpeg (used to normalize provider PCM audio to MP3; included in the production image)
 - A writable persistent disk
-- An OpenRouter API key with access to the configured speech model
+- An API key for each provider used by backend generation (`OPENROUTER_API_KEY` and/or `SPEECHIFY_API_KEY`)
 
 ## Setup
 
@@ -34,6 +34,7 @@ The console provides:
 - A paginated audio library for playing, downloading, inspecting, and deleting every generated cache asset.
 - A request-by-request generation ledger that classifies accepted requests as cache hits or misses and preserves that history even if an audio asset is later deleted.
 - Installation quota inspection, daily usage resets, and credential revocation.
+- Invite approval and suspension controls for server-funded generation.
 - Immediate controls for pausing new generations, daily per-installation quotas, maximum chunk size, log retention, failed-job cleanup, and log pruning.
 
 Runtime changes are persisted in SQLite and audited. Pausing generation does not interrupt in-flight jobs or cached playback; it returns `503 generation_paused` only for new uncached work. Request logs never store access tokens, signed URL query parameters, refresh tokens, request bodies, or source text. Generation events retain identifiers and character counts but not source text.
@@ -56,14 +57,17 @@ The service also applies a global per-IP request limit, in addition to per-insta
 
 ## API flow
 
-1. `POST /v1/installations` registers an anonymous app installation.
+1. `POST /v1/installations` registers an anonymous pending app installation.
 2. `POST /v1/installations/token` refreshes its short-lived access token.
 3. `GET /v1/tts/catalog` returns the Standard, High and Ultra quality presets with one male and one female voice each.
-4. `POST /v1/tts/chunks:resolve` returns cached audio (`200`) or a generation job (`202`).
-5. `GET /v1/tts/jobs/:jobId` polls generation.
-6. The returned, expiring signed URL serves the MP3 from `/v1/tts/audio/:cacheKey`.
+4. `POST /v1/tts/chunks:resolve` accepts curated quality/gender or direct provider/model/voice and returns cached audio, a backend job, or a BYOK upload requirement.
+5. `POST /v1/tts/chunks/upload` publishes an authenticated BYOK MP3.
+6. `GET /v1/tts/jobs/:jobId` polls generation.
+7. The returned, expiring signed URL serves the MP3 from `/v1/tts/audio/:cacheKey`.
 
-Provider model names, provider voice names, and native audio formats remain server-side implementation details. Google PCM output is transcoded to 96 kbps MP3 before storage. The cache identity includes normalized text, model cache revision, public voice selection, and MP3 format. Playback speed is intentionally absent because the Android player applies it locally. Cache hits do not consume generation quota.
+The cache identity includes normalized text, provider, canonical model, canonical voice, and MP3 format. Curated aliases share audio with equivalent direct selections. Google PCM output is transcoded to MP3; Speechify base64 MP3 is decoded before storage. Playback speed is applied by Android. Cache hits and BYOK uploads do not consume backend quota.
+
+Schema version 1 intentionally replaces the legacy SQLite database and audio directory once. Existing clients re-register as pending and require admin approval for backend cache misses.
 
 See [.env.example](.env.example) for catalog, quota, and server configuration.
 The complete request and response contract is documented in [docs/api.md](docs/api.md).

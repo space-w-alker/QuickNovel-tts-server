@@ -12,7 +12,7 @@ import { AudioStorageService } from './tts/audio-storage.service';
 import { AudioTranscoder } from './tts/audio-transcoder';
 import { CatalogController } from './tts/catalog.controller';
 import { CatalogService } from './tts/catalog.service';
-import { OpenRouterSpeechGenerator, SpeechGenerator } from './tts/speech-generator';
+import { OpenRouterSpeechGenerator, SpeechGenerator, SpeechifySpeechGenerator } from './tts/speech-generator';
 import { TtsController } from './tts/tts.controller';
 import { TtsService } from './tts/tts.service';
 
@@ -30,7 +30,8 @@ import { TtsService } from './tts/tts.service';
     AudioTranscoder,
     TtsService,
     OpenRouterSpeechGenerator,
-    { provide: SpeechGenerator, useExisting: OpenRouterSpeechGenerator },
+    SpeechifySpeechGenerator,
+    SpeechGenerator,
   ],
 })
 export class AppModule {}

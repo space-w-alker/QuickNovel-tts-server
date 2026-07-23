@@ -1,7 +1,7 @@
 import { afterEach, vi } from 'vitest';
 import { AppConfig } from '../src/config/app-config';
 import { AudioTranscoder } from '../src/tts/audio-transcoder';
-import { OpenRouterSpeechGenerator } from '../src/tts/speech-generator';
+import { OpenRouterSpeechGenerator, SpeechGenerator, SpeechifySpeechGenerator } from '../src/tts/speech-generator';
 
 describe('OpenRouterSpeechGenerator', () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -25,7 +25,7 @@ describe('OpenRouterSpeechGenerator', () => {
     } as AppConfig, transcoder);
 
     const result = await generator.generate({
-      model: 'provider/model', voice: 'alloy', text: 'Hello.', responseFormat: 'mp3',
+      provider: 'openrouter', model: 'provider/model', voice: 'alloy', text: 'Hello.', responseFormat: 'mp3',
     });
 
     expect(result.audio).toEqual(Buffer.from('mp3'));
@@ -57,7 +57,7 @@ describe('OpenRouterSpeechGenerator', () => {
     } as AppConfig, transcoder);
 
     const result = await generator.generate({
-      model: 'google/model', voice: 'Puck', text: 'Hello.', responseFormat: 'pcm',
+      provider: 'openrouter', model: 'google/model', voice: 'Puck', text: 'Hello.', responseFormat: 'pcm',
     });
 
     expect(result.audio).toEqual(Buffer.from('normalized-mp3'));
@@ -79,9 +79,72 @@ describe('OpenRouterSpeechGenerator', () => {
       maxAudioBytes: 1024,
     } as AppConfig, { pcmToMp3: vi.fn() });
     await expect(generator.generate({
-      model: 'model', voice: 'voice', text: 'Hello.', responseFormat: 'mp3',
+      provider: 'openrouter', model: 'model', voice: 'voice', text: 'Hello.', responseFormat: 'mp3',
     })).rejects.toThrow(
       'unsupported content type',
     );
+  });
+});
+
+describe('SpeechifySpeechGenerator', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('requests and decodes Speechify MP3 audio', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      audio_data: Buffer.from('speechify-mp3').toString('base64'),
+      audio_format: 'mp3',
+      billable_characters_count: 6,
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const generator = new SpeechifySpeechGenerator({
+      speechifyApiKey: 'speechify-key',
+      speechifyBaseUrl: 'https://speechify.example',
+      maxAudioBytes: 1024,
+    } as AppConfig);
+
+    const result = await generator.generate({
+      provider: 'speechify', model: 'simba-3.0', voice: 'george', text: 'Hello.',
+    });
+
+    expect(result.audio).toEqual(Buffer.from('speechify-mp3'));
+    expect(result.billableCharacters).toBe(6);
+    const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://speechify.example/v1/audio/speech');
+    expect(JSON.parse(options.body as string)).toEqual({
+      input: 'Hello.',
+      voice_id: 'george',
+      model: 'simba-3.0',
+      audio_format: 'mp3',
+    });
+  });
+
+  it('rejects malformed Speechify audio data', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      audio_data: 'not-base64!',
+      audio_format: 'mp3',
+    }), { status: 200 })));
+    const generator = new SpeechifySpeechGenerator({
+      speechifyApiKey: 'speechify-key',
+      speechifyBaseUrl: 'https://speechify.example',
+      maxAudioBytes: 1024,
+    } as AppConfig);
+    await expect(generator.generate({
+      provider: 'speechify', model: 'simba-3.0', voice: 'george', text: 'Hello.',
+    })).rejects.toThrow('invalid base64');
+  });
+});
+
+describe('SpeechGenerator', () => {
+  it('dispatches generation by canonical provider', async () => {
+    const openRouter = { generate: vi.fn().mockResolvedValue({ audio: Buffer.from('or') }) };
+    const speechify = { generate: vi.fn().mockResolvedValue({ audio: Buffer.from('sf') }) };
+    const generator = new SpeechGenerator(
+      openRouter as unknown as OpenRouterSpeechGenerator,
+      speechify as unknown as SpeechifySpeechGenerator,
+    );
+    await generator.generate({ provider: 'openrouter', model: 'm', voice: 'v', text: 'one' });
+    await generator.generate({ provider: 'speechify', model: 'm', voice: 'v', text: 'two' });
+    expect(openRouter.generate).toHaveBeenCalledOnce();
+    expect(speechify.generate).toHaveBeenCalledOnce();
   });
 });

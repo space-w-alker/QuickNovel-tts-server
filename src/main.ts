@@ -3,6 +3,7 @@ import 'reflect-metadata';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
+import multipart from '@fastify/multipart';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -21,6 +22,7 @@ async function bootstrap(): Promise<void> {
   app.useGlobalFilters(new ApiExceptionFilter());
   await app.register(cors, { origin: false });
   await app.register(cookie);
+  await app.register(multipart);
   const config = app.get(AppConfig);
   await app.register(rateLimit, { max: config.rateLimitMax, timeWindow: config.rateLimitWindow });
   const state = app.get(SqliteStateStore);

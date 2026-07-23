@@ -3,7 +3,7 @@ import { Injectable, OnApplicationShutdown, OnModuleInit } from '@nestjs/common'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import Database = require('better-sqlite3');
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { AppConfig } from '../config/app-config';
 import {
@@ -16,6 +16,7 @@ import {
   EventLog,
   GenerationRequestRecord,
   HttpRequestLog,
+  InstallationStatus,
   OperationalSettings,
   QuotaSnapshot,
   SortDirection,
@@ -32,6 +33,9 @@ export interface AdminUserRecord {
 
 export interface AdminOverview {
   installations: number;
+  pendingInstallations: number;
+  approvedInstallations: number;
+  suspendedInstallations: number;
   todayCharacters: number;
   todayGenerations: number;
   readyAudio: number;
@@ -49,6 +53,8 @@ export interface AdminOverview {
 export interface AdminInstallationRow {
   id: string;
   createdAt: string;
+  backendGenerationStatus: InstallationStatus;
+  statusUpdatedAt: string;
   characters: number;
   generations: number;
 }
@@ -68,6 +74,8 @@ interface AudioRow {
   cache_key: string;
   job_id: string;
   status: AudioRecord['status'];
+  provider_id: AudioRecord['providerId'];
+  generation_source: AudioRecord['generationSource'];
   model_id: string;
   model_cache_revision: string;
   voice_id: string;
@@ -93,8 +101,10 @@ interface GenerationRequestRow {
   cache_key: string;
   job_id: string;
   cache_hit: number;
+  generation_source: GenerationRequestRecord['generationSource'];
   created_at: string;
   audio_status: AudioRecord['status'] | null;
+  provider_id: AudioRecord['providerId'] | null;
   voice_id: string | null;
   model_id: string | null;
   input_characters: number | null;
@@ -113,7 +123,9 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
 
   onModuleInit(): void {
     mkdirSync(this.config.dataDir, { recursive: true });
-    this.database = new Database(join(this.config.dataDir, 'quicknovel-tts.sqlite'));
+    const databasePath = join(this.config.dataDir, 'quicknovel-tts.sqlite');
+    this.resetLegacyState(databasePath);
+    this.database = new Database(databasePath);
     this.database.pragma('journal_mode = WAL');
     this.database.pragma('foreign_keys = ON');
     this.database.pragma('busy_timeout = 5000');
@@ -132,13 +144,18 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
     this.database?.close();
   }
 
-  registerInstallation(id: string): { refreshToken: string } {
+  registerInstallation(id: string): { refreshToken: string; status: InstallationStatus } {
     const refreshToken = randomBytes(32).toString('base64url');
+    const now = new Date().toISOString();
     try {
       this.database
-        .prepare('INSERT INTO installations (id, refresh_token_hash, created_at) VALUES (?, ?, ?)')
-        .run(id, this.hash(refreshToken), new Date().toISOString());
-      return { refreshToken };
+        .prepare(
+          `INSERT INTO installations (
+             id, refresh_token_hash, backend_generation_status, created_at, status_updated_at
+           ) VALUES (?, ?, 'pending', ?, ?)`,
+        )
+        .run(id, this.hash(refreshToken), now, now);
+      return { refreshToken, status: 'pending' };
     } catch (error) {
       if ((error as { code?: string }).code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
         throw new InstallationExistsError();
@@ -149,6 +166,22 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
 
   hasInstallation(id: string): boolean {
     return Boolean(this.database.prepare('SELECT 1 FROM installations WHERE id = ?').get(id));
+  }
+
+  getInstallationStatus(id: string): InstallationStatus | undefined {
+    const row = this.database
+      .prepare('SELECT backend_generation_status AS status FROM installations WHERE id = ?')
+      .get(id) as { status: InstallationStatus } | undefined;
+    return row?.status;
+  }
+
+  setInstallationStatus(id: string, status: InstallationStatus): InstallationStatus | undefined {
+    const previous = this.getInstallationStatus(id);
+    if (!previous) return undefined;
+    this.database
+      .prepare('UPDATE installations SET backend_generation_status = ?, status_updated_at = ? WHERE id = ?')
+      .run(status, new Date().toISOString(), id);
+    return previous;
   }
 
   verifyRefreshToken(id: string, refreshToken: string): void {
@@ -265,6 +298,8 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
       const timestamp = now.toISOString();
       const claimed: AudioRecord = {
         ...record,
+        providerId: record.providerId ?? 'openrouter',
+        generationSource: record.generationSource ?? 'backend',
         jobId: randomUUID(),
         status: 'generating',
         createdAt: existing?.createdAt ?? timestamp,
@@ -273,9 +308,10 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
       this.database
         .prepare(
           `INSERT INTO audio_cache (
-             cache_key, job_id, status, model_id, model_cache_revision, voice_id, text_hash,
+             cache_key, job_id, status, provider_id, generation_source,
+             model_id, model_cache_revision, voice_id, text_hash,
              input_characters, created_at, updated_at, content_type, bytes, error_code, error_message
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
            ON CONFLICT(cache_key) DO UPDATE SET
              job_id = excluded.job_id, status = excluded.status, updated_at = excluded.updated_at,
              content_type = NULL, bytes = NULL, error_code = NULL, error_message = NULL`,
@@ -284,6 +320,8 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
           claimed.cacheKey,
           claimed.jobId,
           claimed.status,
+          claimed.providerId,
+          claimed.generationSource,
           claimed.modelId,
           claimed.modelCacheRevision,
           claimed.voiceId,
@@ -315,6 +353,44 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
       )
       .run(code, message, new Date().toISOString(), cacheKey);
     return this.requireAudio(cacheKey);
+  }
+
+  registerUploadedAudio(
+    installationId: string,
+    record: Omit<AudioRecord, 'jobId' | 'status' | 'createdAt' | 'updatedAt' | 'contentType' | 'bytes'>,
+    bytes: number,
+    now = new Date(),
+  ): { record: AudioRecord; inserted: boolean } {
+    return this.database.transaction(() => {
+      const existing = this.getAudio(record.cacheKey);
+      if (existing) {
+        this.insertGenerationRequest(installationId, existing, true, now);
+        return { record: existing, inserted: false };
+      }
+      const timestamp = now.toISOString();
+      const uploaded: AudioRecord = {
+        ...record,
+        jobId: randomUUID(),
+        status: 'ready',
+        contentType: 'audio/mpeg',
+        bytes,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      this.database.prepare(
+        `INSERT INTO audio_cache (
+           cache_key, job_id, status, provider_id, generation_source, model_id,
+           model_cache_revision, voice_id, text_hash, input_characters, created_at,
+           updated_at, content_type, bytes
+         ) VALUES (?, ?, 'ready', ?, 'byok', ?, ?, ?, ?, ?, ?, ?, 'audio/mpeg', ?)`,
+      ).run(
+        uploaded.cacheKey, uploaded.jobId, uploaded.providerId, uploaded.modelId,
+        uploaded.modelCacheRevision, uploaded.voiceId, uploaded.textHash,
+        uploaded.inputCharacters, uploaded.createdAt, uploaded.updatedAt, bytes,
+      );
+      this.insertGenerationRequest(installationId, uploaded, false, now);
+      return { record: uploaded, inserted: true };
+    }).immediate();
   }
 
   getAdminUser(username: string): AdminUserRecord | undefined {
@@ -424,6 +500,15 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
     const p95Index = Math.max(0, Math.ceil(latencyRows.length * 0.95) - 1);
     return {
       installations: scalar('SELECT COUNT(*) AS value FROM installations'),
+      pendingInstallations: scalar(
+        "SELECT COUNT(*) AS value FROM installations WHERE backend_generation_status = 'pending'",
+      ),
+      approvedInstallations: scalar(
+        "SELECT COUNT(*) AS value FROM installations WHERE backend_generation_status = 'approved'",
+      ),
+      suspendedInstallations: scalar(
+        "SELECT COUNT(*) AS value FROM installations WHERE backend_generation_status = 'suspended'",
+      ),
       todayCharacters: scalar('SELECT SUM(characters) AS value FROM daily_usage WHERE usage_date = ?', today),
       todayGenerations: scalar('SELECT SUM(generations) AS value FROM daily_usage WHERE usage_date = ?', today),
       readyAudio: scalar("SELECT COUNT(*) AS value FROM audio_cache WHERE status = 'ready'"),
@@ -529,8 +614,9 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
   }
 
   listGenerationRequests(limit = 100, offset = 0, cacheHit?: boolean): GenerationRequestRecord[] {
-    const sql = `SELECT r.id, r.installation_id, r.cache_key, r.job_id, r.cache_hit, r.created_at,
-                        a.status AS audio_status, a.voice_id, a.model_id, a.input_characters,
+    const sql = `SELECT r.id, r.installation_id, r.cache_key, r.job_id, r.cache_hit,
+                        r.generation_source, r.created_at,
+                        a.status AS audio_status, a.provider_id, a.voice_id, a.model_id, a.input_characters,
                         a.content_type, a.bytes, a.error_code, a.error_message
                  FROM generation_requests r
                  LEFT JOIN audio_cache a ON a.cache_key = r.cache_key
@@ -545,8 +631,10 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
       cacheKey: row.cache_key,
       jobId: row.job_id,
       cacheHit: row.cache_hit === 1,
+      generationSource: row.generation_source,
       createdAt: row.created_at,
       ...(row.audio_status ? { audioStatus: row.audio_status } : {}),
+      ...(row.provider_id ? { providerId: row.provider_id } : {}),
       ...(row.voice_id ? { voiceId: row.voice_id } : {}),
       ...(row.model_id ? { modelId: row.model_id } : {}),
       ...(row.input_characters !== null ? { inputCharacters: row.input_characters } : {}),
@@ -574,7 +662,10 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
   listInstallations(limit = 100, now = new Date()): AdminInstallationRow[] {
     return this.database
       .prepare(
-        `SELECT i.id, i.created_at AS createdAt, COALESCE(u.characters, 0) AS characters,
+        `SELECT i.id, i.created_at AS createdAt,
+                i.backend_generation_status AS backendGenerationStatus,
+                i.status_updated_at AS statusUpdatedAt,
+                COALESCE(u.characters, 0) AS characters,
                 COALESCE(u.generations, 0) AS generations
          FROM installations i
          LEFT JOIN daily_usage u ON u.installation_id = i.id AND u.usage_date = ?
@@ -622,7 +713,10 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
       CREATE TABLE IF NOT EXISTS installations (
         id TEXT PRIMARY KEY,
         refresh_token_hash TEXT NOT NULL,
-        created_at TEXT NOT NULL
+        backend_generation_status TEXT NOT NULL
+          CHECK(backend_generation_status IN ('pending', 'approved', 'suspended')),
+        created_at TEXT NOT NULL,
+        status_updated_at TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS daily_usage (
@@ -637,6 +731,8 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
         cache_key TEXT PRIMARY KEY CHECK(length(cache_key) = 64),
         job_id TEXT NOT NULL UNIQUE,
         status TEXT NOT NULL CHECK(status IN ('generating', 'ready', 'failed')),
+        provider_id TEXT NOT NULL CHECK(provider_id IN ('openrouter', 'speechify')),
+        generation_source TEXT NOT NULL CHECK(generation_source IN ('backend', 'byok')),
         model_id TEXT NOT NULL,
         model_cache_revision TEXT NOT NULL,
         voice_id TEXT NOT NULL,
@@ -658,6 +754,7 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
         cache_key TEXT NOT NULL,
         job_id TEXT NOT NULL,
         cache_hit INTEGER NOT NULL CHECK(cache_hit IN (0, 1)),
+        generation_source TEXT NOT NULL CHECK(generation_source IN ('backend', 'byok')),
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS generation_requests_created_idx ON generation_requests(created_at DESC);
@@ -712,6 +809,7 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
       );
       CREATE INDEX IF NOT EXISTS event_logs_created_idx ON event_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS event_logs_severity_idx ON event_logs(severity, created_at DESC);
+      PRAGMA user_version = 1;
     `);
   }
 
@@ -720,6 +818,8 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
       cacheKey: row.cache_key,
       jobId: row.job_id,
       status: row.status,
+      providerId: row.provider_id,
+      generationSource: row.generation_source,
       modelId: row.model_id,
       modelCacheRevision: row.model_cache_revision,
       voiceId: row.voice_id,
@@ -742,10 +842,30 @@ export class SqliteStateStore implements OnModuleInit, OnApplicationShutdown {
   ): void {
     this.database
       .prepare(
-        `INSERT INTO generation_requests (id, installation_id, cache_key, job_id, cache_hit, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO generation_requests (
+           id, installation_id, cache_key, job_id, cache_hit, generation_source, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(randomUUID(), installationId, record.cacheKey, record.jobId, cacheHit ? 1 : 0, now.toISOString());
+      .run(
+        randomUUID(), installationId, record.cacheKey, record.jobId, cacheHit ? 1 : 0,
+        record.generationSource, now.toISOString(),
+      );
+  }
+
+  private resetLegacyState(databasePath: string): void {
+    if (!existsSync(databasePath)) return;
+    const inspection = new Database(databasePath, { readonly: true });
+    const version = inspection.pragma('user_version', { simple: true }) as number;
+    const legacy = version === 0 && Boolean(
+      inspection.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'installations'").get(),
+    );
+    inspection.close();
+    if (!legacy) return;
+    for (const path of [databasePath, `${databasePath}-wal`, `${databasePath}-shm`]) {
+      rmSync(path, { force: true });
+    }
+    rmSync(join(this.config.dataDir, 'audio'), { recursive: true, force: true });
+    console.warn('Reset legacy QuickNovel TTS database and audio cache for schema version 1');
   }
 
   private quotaFromUsage(usage: DailyUsageRecord, now: Date): QuotaSnapshot {

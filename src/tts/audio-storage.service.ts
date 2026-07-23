@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { AppConfig } from '../config/app-config';
 
@@ -16,6 +16,22 @@ export class AudioStorageService {
     await writeFile(temporaryPath, audio, { mode: 0o600 });
     await rename(temporaryPath, path);
     return (await stat(path)).size;
+  }
+
+  async saveIfAbsent(cacheKey: string, audio: Buffer): Promise<{ bytes: number; created: boolean }> {
+    const path = this.path(cacheKey);
+    await mkdir(dirname(path), { recursive: true });
+    const temporaryPath = `${path}.${process.pid}.${Date.now()}.upload`;
+    await writeFile(temporaryPath, audio, { mode: 0o600 });
+    try {
+      await link(temporaryPath, path);
+      return { bytes: (await stat(path)).size, created: true };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      return { bytes: (await stat(path)).size, created: false };
+    } finally {
+      await unlink(temporaryPath).catch(() => undefined);
+    }
   }
 
   stream(cacheKey: string): NodeJS.ReadableStream {
